@@ -126,6 +126,92 @@ def evaluate_forecasts(actual_values, lstm_forecasts, arima_forecasts):
         }
     }
 
+def analyze_model_weights(lstm_model, lstm_params):
+    """
+    Analyze the weights of the fully connected layer to determine the relative importance 
+    of scattering coefficients vs. raw data
+    """
+    print("\n===== Analyzing Model Weights =====")
+    lstm_model.eval()
+    
+    # Extracting the weights from the fully connected layer
+    fc_weights = lstm_model.fc.weight.data.cpu().numpy()
+
+    # First half correspond to the scattering LSTM
+    # Second half correspond to the raw data LSTM
+    scattering_weights = fc_weights[:, :lstm_params['hidden_dim']]
+    raw_data_weights = fc_weights[:, lstm_params['hidden_dim']:]
+
+    # Calcu the absolute sum of weights for each component
+    # (= overall influence of each component)
+    scattering_influence = np.abs(scattering_weights).sum()
+    raw_data_influence = np.abs(raw_data_weights).sum()
+
+    # Calc the relative importance
+    total_influence = scattering_influence + raw_data_influence
+    scattering_importance = scattering_influence / total_influence * 100
+    raw_data_importance = raw_data_influence / total_influence * 100
+
+    print(f"\n===== Fully Connected Layer Weight Analysis =====")
+    print(f"Scattering LSTM total absolute weight: {scattering_influence:.4f}")
+    print(f"Raw data LSTM total absolute weight: {raw_data_influence:.4f}")
+    print(f"Scattering LSTM relative importance: {scattering_importance:.2f}%")
+    print(f"Raw data LSTM relative importance: {raw_data_importance:.2f}%")
+
+    scattering_abs_mean = np.abs(scattering_weights).mean()
+    raw_data_abs_mean = np.abs(raw_data_weights).mean()
+    scattering_abs_std = np.abs(scattering_weights).std()
+    raw_data_abs_std = np.abs(raw_data_weights).std()
+
+    print(f"\nScattering LSTM mean absolute weight: {scattering_abs_mean:.4f} (±{scattering_abs_std:.4f})")
+    print(f"Raw data LSTM mean absolute weight: {raw_data_abs_mean:.4f} (±{raw_data_abs_std:.4f})")
+
+    plt.figure(figsize=(12, 8))
+
+    # Relative importance plot
+    plt.subplot(2, 2, 1)
+    importance = [scattering_importance, raw_data_importance]
+    plt.bar(['Scattering LSTM', 'Raw Data LSTM'], importance, color=['#3498db', '#e74c3c'])
+    plt.title('Relative Importance (%)')
+    plt.ylabel('Percentage (%)')
+    plt.ylim(0, 100)
+
+    # Weight distribution histograms
+    plt.subplot(2, 2, 2)
+    plt.hist(scattering_weights.flatten(), bins=30, alpha=0.7, label='Scattering LSTM', color='#3498db')
+    plt.hist(raw_data_weights.flatten(), bins=30, alpha=0.7, label='Raw Data LSTM', color='#e74c3c')
+    plt.title('Weight Distribution')
+    plt.xlabel('Weight Value')
+    plt.ylabel('Frequency')
+    plt.legend()
+
+    # Heatmap of scattering weights
+    plt.subplot(2, 2, 3)
+    plt.imshow(np.abs(scattering_weights), cmap='Blues', aspect='auto')
+    plt.colorbar(label='Absolute Weight Value')
+    plt.title('Scattering LSTM Weights')
+    plt.xlabel('Hidden Unit')
+    plt.ylabel('Output Unit')
+
+    # Heatmap of raw data weights
+    plt.subplot(2, 2, 4)
+    plt.imshow(np.abs(raw_data_weights), cmap='Reds', aspect='auto')
+    plt.colorbar(label='Absolute Weight Value')
+    plt.title('Raw Data LSTM Weights')
+    plt.xlabel('Hidden Unit')
+    plt.ylabel('Output Unit')
+
+    plt.tight_layout()
+    plt.savefig('weight_analysis.png', dpi=300)
+    plt.show()
+
+    return {
+        'scattering_importance': scattering_importance,
+        'raw_data_importance': raw_data_importance,
+        'scattering_weights': scattering_weights,
+        'raw_data_weights': raw_data_weights
+    }
+
 def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params, random_seed=42):
     """
     Optimized version: Generates rolling window forecasts using Wavelet Scattering 
@@ -356,9 +442,11 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
         if (i + 1) % 5 == 0 or i == 0:
             print(f"Completed forecast {i+1}/{total_forecast_points}")
             print(f"LSTM: {lstm_forecasts[-1]:.2f}, Actual: {actual[0]:.2f}")
+        
+    weight_analysis = analyze_model_weights(lstm_model, lstm_params)
     
     training_times = {'lstm': lstm_training_times, 'arima': arima_training_times}
-    return lstm_forecasts, actual_values, arima_forecasts, training_times
+    return lstm_forecasts, actual_values, arima_forecasts, training_times, lstm_model
 
 if __name__ == "__main__":
     global_seed = 42 # Claaaaaaasic
@@ -406,7 +494,7 @@ if __name__ == "__main__":
     print(f"Global random seed: {global_seed}")
     
     start_time = time.time()
-    lstm_forecasts, actual_values, arima_forecasts, training_times = rolling_window_forecast_scattering_lstm(
+    lstm_forecasts, actual_values, arima_forecasts, training_times, lstm_model = rolling_window_forecast_scattering_lstm(
         train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params, random_seed=global_seed
     )
     end_time = time.time()
