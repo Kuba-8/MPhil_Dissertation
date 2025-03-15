@@ -14,28 +14,37 @@ import random
 
 class TimeSeriesDataset(Dataset):
     """
-    Custom dataset loading function for efficient batch loading of time series data with scattering transform
-
+    Universal dataset class for time series forecasting that can handle:
+    1. Combined scattering + raw data (for dual-input LSTM)
+    2. Raw data only (for pure LSTM)
+    3. Scattering coefficients only (for scattering-only models)
+    
     Args:
         data (np.ndarray): Time series data as a numpy array
         window_size (int): Size of the input window
         forecast_horizon (int): Number of steps to forecast
-        scattering_transform (kymatio.torch.Scattering1D): Scattering transform object
+        mode (str): One of 'combined', 'raw_only', or 'scattering_only'
+        scattering_transform (kymatio.torch.Scattering1D, optional): Scattering transform object
         step (int): Step size for windowing the data, also known as the stride
 
-    Returns:
-        torch.Tensor: Scattering coefficients, raw window, target window
-
-    Made the scattering transform optional to allow the class to be instantiated without it (for an ARIMA, pure LSTM models)
-
     """
-    def __init__(self, data, window_size, forecast_horizon, scattering_transform=None, step=1):
+
+    def __init__(self, data, window_size, forecast_horizon, mode='combined', 
+                 scattering_transform=None, step=1):
         self.data = data
         self.window_size = window_size
         self.forecast_horizon = forecast_horizon
+        self.mode = mode
         self.scattering = scattering_transform
         self.step = step
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        valid_modes = ['combined', 'raw_only', 'scattering_only']
+        if mode not in valid_modes:
+            raise ValueError(f"Mode must be one of {valid_modes}, got {mode}")
+        
+        if (mode == 'combined' or mode == 'scattering_only') and scattering_transform is None:
+            raise ValueError(f"Scattering transform must be provided for mode '{mode}'")
         
         self.indices = list(range(0, len(data) - window_size - forecast_horizon + 1, step))
         
@@ -45,27 +54,32 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         start_idx = self.indices[idx]
         
-        if self.scattering is not None:
-            window = self.data[start_idx:start_idx + self.window_size].flatten()
-        else:
-            window = self.data[start_idx:start_idx + self.window_size]
-            
+        window = self.data[start_idx:start_idx + self.window_size].flatten()
         target = self.data[start_idx + self.window_size:start_idx + self.window_size + self.forecast_horizon].flatten()
         
         window_tensor = torch.tensor(window, dtype=torch.float32)
         target_tensor = torch.tensor(target, dtype=torch.float32)
         
-        if self.scattering is not None:
-            with torch.no_grad():
-                scattering_input = window_tensor.unsqueeze(0).unsqueeze(0)
-                scattering_coeffs = self.scattering(scattering_input)
+        if self.mode == 'raw_only':
+            raw_window = self.data[start_idx:start_idx + self.window_size]
+            raw_tensor = torch.tensor(raw_window, dtype=torch.float32)
+            return raw_tensor.reshape(-1, 1), target_tensor
+        
+        with torch.no_grad():
+            scattering_input = window_tensor.unsqueeze(0).unsqueeze(0)
+            scattering_coeffs = self.scattering(scattering_input)
+            
+            if self.mode == 'combined':
                 scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[0], 
                                                              scattering_coeffs.shape[2], 1)
-            return scattering_coeffs[0], window_tensor.reshape(-1, 1), target_tensor
-        else:
-            return window_tensor.reshape(-1, 1), target_tensor
+                return scattering_coeffs[0], window_tensor.reshape(-1, 1), target_tensor
+            
+            elif self.mode == 'scattering_only':
+                scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[2], 1)
+                return scattering_coeffs, target_tensor
 
-def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forecasts, arima_forecasts):
+
+def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forecasts, scattering_only_forecasts, arima_forecasts):
     """
     Just a load of forecast evaluation metrics
     """
@@ -78,6 +92,10 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     pure_lstm_mae = mean_absolute_error(actual_values, pure_lstm_forecasts)
     pure_lstm_rmse = np.sqrt(pure_lstm_mse)
     
+    scattering_only_mse = mean_squared_error(actual_values, scattering_only_forecasts)
+    scattering_only_mae = mean_absolute_error(actual_values, scattering_only_forecasts)
+    scattering_only_rmse = np.sqrt(scattering_only_mse)
+    
     arima_mse = mean_squared_error(actual_values, arima_forecasts)
     arima_mae = mean_absolute_error(actual_values, arima_forecasts)
     arima_rmse = np.sqrt(arima_mse)
@@ -87,6 +105,7 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     
     lstm_scattering_mape = mape(actual_values, lstm_scattering_forecasts)
     pure_lstm_mape = mape(actual_values, pure_lstm_forecasts)
+    scattering_only_mape = mape(actual_values, scattering_only_forecasts)
     arima_mape = mape(actual_values, arima_forecasts)
     
     # Directional accuracy = whether it is predicting up/down movement correctly
@@ -98,6 +117,7 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     
     lstm_scattering_dir_acc = directional_accuracy(actual_values, lstm_scattering_forecasts)
     pure_lstm_dir_acc = directional_accuracy(actual_values, pure_lstm_forecasts)
+    scattering_only_dir_acc = directional_accuracy(actual_values, scattering_only_forecasts)
     arima_dir_acc = directional_accuracy(actual_values, arima_forecasts)
     
     print("\n===== Comprehensive Forecast Evaluation =====")
@@ -107,6 +127,13 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     print(f"  MAE: {lstm_scattering_mae:.2f}")
     print(f"  MAPE: {lstm_scattering_mape:.2f}%")
     print(f"  Directional Accuracy: {lstm_scattering_dir_acc:.2f}%")
+    
+    print(f"\nScattering-Only LSTM Metrics:")
+    print(f"  MSE: {scattering_only_mse:.2f}")
+    print(f"  RMSE: {scattering_only_rmse:.2f}")
+    print(f"  MAE: {scattering_only_mae:.2f}")
+    print(f"  MAPE: {scattering_only_mape:.2f}%")
+    print(f"  Directional Accuracy: {scattering_only_dir_acc:.2f}%")
     
     print(f"\nPure LSTM Metrics:")
     print(f"  MSE: {pure_lstm_mse:.2f}")
@@ -127,6 +154,10 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     print(f"    MSE: {(arima_mse - lstm_scattering_mse) / arima_mse * 100:.2f}% lower with LSTM+Scattering")
     print(f"    MAE: {(arima_mae - lstm_scattering_mae) / arima_mae * 100:.2f}% lower with LSTM+Scattering")
     
+    print(f"\n  Scattering-Only LSTM vs ARIMA:")
+    print(f"    MSE: {(arima_mse - scattering_only_mse) / arima_mse * 100:.2f}% lower with Scattering-Only LSTM")
+    print(f"    MAE: {(arima_mae - scattering_only_mae) / arima_mae * 100:.2f}% lower with Scattering-Only LSTM")
+    
     print(f"\n  Pure LSTM vs ARIMA:")
     print(f"    MSE: {(arima_mse - pure_lstm_mse) / arima_mse * 100:.2f}% lower with Pure LSTM")
     print(f"    MAE: {(arima_mae - pure_lstm_mae) / arima_mae * 100:.2f}% lower with Pure LSTM")
@@ -135,6 +166,14 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     print(f"    MSE: {(pure_lstm_mse - lstm_scattering_mse) / pure_lstm_mse * 100:.2f}% lower with LSTM+Scattering")
     print(f"    MAE: {(pure_lstm_mae - lstm_scattering_mae) / pure_lstm_mae * 100:.2f}% lower with LSTM+Scattering")
     
+    print(f"\n  LSTM+Scattering vs Scattering-Only LSTM:")
+    print(f"    MSE: {(scattering_only_mse - lstm_scattering_mse) / scattering_only_mse * 100:.2f}% lower with LSTM+Scattering")
+    print(f"    MAE: {(scattering_only_mae - lstm_scattering_mae) / scattering_only_mae * 100:.2f}% lower with LSTM+Scattering")
+    
+    print(f"\n  Scattering-Only LSTM vs Pure LSTM:")
+    print(f"    MSE: {(pure_lstm_mse - scattering_only_mse) / pure_lstm_mse * 100:.2f}% lower with Scattering-Only LSTM")
+    print(f"    MAE: {(pure_lstm_mae - scattering_only_mae) / pure_lstm_mae * 100:.2f}% lower with Scattering-Only LSTM")
+    
     return {
         'lstm_scattering': {
             'mse': lstm_scattering_mse,
@@ -142,6 +181,13 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
             'mae': lstm_scattering_mae,
             'mape': lstm_scattering_mape,
             'dir_acc': lstm_scattering_dir_acc
+        },
+        'scattering_only': {
+            'mse': scattering_only_mse,
+            'rmse': scattering_only_rmse,
+            'mae': scattering_only_mae,
+            'mape': scattering_only_mape,
+            'dir_acc': scattering_only_dir_acc
         },
         'pure_lstm': {
             'mse': pure_lstm_mse,
@@ -237,7 +283,7 @@ def analyze_model_weights(lstm_model, lstm_params):
     plt.tight_layout()
     plt.savefig('weight_analysis.png', dpi=300)
     plt.show()
-
+    
     return {
         'scattering_importance': scattering_importance,
         'raw_data_importance': raw_data_importance,
@@ -248,7 +294,7 @@ def analyze_model_weights(lstm_model, lstm_params):
 def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params, random_seed=42):
     """
     Optimized version: Generates rolling window forecasts using Wavelet Scattering 
-    Transform and LSTM, Pure LSTM, and ARIMA for large datasets
+    Transform and LSTM, Pure LSTM, Scattering-Only LSTM, and ARIMA for large datasets
     """
 
     torch.manual_seed(random_seed)
@@ -262,10 +308,12 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
     
     lstm_scattering_forecasts = []
     pure_lstm_forecasts = []
+    scattering_only_forecasts = []
     arima_forecasts = []
     actual_values = []
     lstm_scattering_training_times = []
     pure_lstm_training_times = []
+    scattering_only_training_times = []
     arima_training_times = []
 
     # Fitting the scaler only on the training data, for now
@@ -329,11 +377,28 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
             output = self.fc(lstm_out)
             return output
     
+    # Defining the class for the Third LSTM model, which only takes the scattering coefficients as inputs
+    class ScatteringOnlyLSTM(nn.Module):
+        def __init__(self, scattering_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
+            super(ScatteringOnlyLSTM, self).__init__()
+            self.lstm = nn.LSTM(1, hidden_dim, num_layers=num_layers, 
+                              batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+            self.dropout = nn.Dropout(dropout_rate)
+            self.fc = nn.Linear(hidden_dim, output_dim)
+
+        def forward(self, x):
+            lstm_out, _ = self.lstm(x)
+            lstm_out = lstm_out[:, -1, :]
+            lstm_out = self.dropout(lstm_out)
+            output = self.fc(lstm_out)
+            return output
+    
     step_size = 4
     train_dataset = TimeSeriesDataset(
         train_data_scaled, 
         window_size, 
         forecast_horizon,
+        mode='combined',
         scattering_transform=scattering.to(device),
         step=step_size
     )
@@ -344,7 +409,19 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
         train_data_scaled, 
         window_size, 
         forecast_horizon,
+        mode='raw_only',
         scattering_transform=None, 
+        step=step_size
+    )
+    
+    # Creating an alternative dataset for the scattering-only LSTM model 
+    # (no raw data points, only scattering coefficients)
+    scattering_only_dataset = TimeSeriesDataset(
+        train_data_scaled,
+        window_size,
+        forecast_horizon,
+        mode='scattering_only',
+        scattering_transform=scattering.to(device),
         step=step_size
     )
     
@@ -365,11 +442,22 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
         pin_memory=torch.cuda.is_available()
     )
     
+    scattering_only_loader = DataLoader(
+        scattering_only_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available()
+    )
+    
     sample_batch = next(iter(train_loader))
     sample_scattering, sample_raw, _ = sample_batch
     
     scattering_shape = sample_scattering.shape[1]
     print(f"Scattering shape: {scattering_shape}")
+    
+    scattering_only_sample = next(iter(scattering_only_loader))
+    scattering_only_input, _ = scattering_only_sample
     
     # Initialize the models
     lstm_scattering_model = ScatteringLSTM(
@@ -390,6 +478,15 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
     )
     pure_lstm_model.to(device)
     
+    scattering_only_model = ScatteringOnlyLSTM(
+        scattering_dim=scattering_only_input.shape[1],
+        hidden_dim=lstm_params['hidden_dim'],
+        output_dim=forecast_horizon,
+        dropout_rate=lstm_params['dropout_rate'],
+        num_layers=lstm_params['num_layers']
+    )
+    scattering_only_model.to(device)
+    
     print(f"LSTM+Scattering Model Architecture:")
     print(f"  Hidden Dimensions: {lstm_params['hidden_dim']}")
     print(f"  Number of Layers: {lstm_params['num_layers']}")
@@ -402,14 +499,21 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
     print(f"  Dropout Rate: {lstm_params['dropout_rate']}")
     print(f"  Total Parameters: {sum(p.numel() for p in pure_lstm_model.parameters())}")
     
+    print(f"\nScattering-Only LSTM Model Architecture:")
+    print(f"  Hidden Dimensions: {lstm_params['hidden_dim']}")
+    print(f"  Number of Layers: {lstm_params['num_layers']}")
+    print(f"  Dropout Rate: {lstm_params['dropout_rate']}")
+    print(f"  Total Parameters: {sum(p.numel() for p in scattering_only_model.parameters())}")
+    
     optimizer_scattering = optim.Adam(lstm_scattering_model.parameters(), lr=lstm_params['learning_rate'])
     optimizer_pure = optim.Adam(pure_lstm_model.parameters(), lr=lstm_params['learning_rate'])
+    optimizer_scattering_only = optim.Adam(scattering_only_model.parameters(), lr=lstm_params['learning_rate'])  # New optimizer
     criterion = nn.MSELoss()
     
     lstm_scattering_start_time = time.time()
     lstm_scattering_model.train()
     
-    early_stop_patience = 3
+    early_stop_patience = 5
     best_loss_scattering = float('inf')
     patience_counter_scattering = 0
     
@@ -515,6 +619,59 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
     pure_lstm_training_times.append(pure_lstm_training_time)
     print(f"Pure LSTM training completed in {pure_lstm_training_time:.2f} seconds")
     
+    # Finally, Training the Scattering-Only LSTM model
+    scattering_only_start_time = time.time()
+    scattering_only_model.train()
+    
+    best_loss_scattering_only = float('inf')
+    patience_counter_scattering_only = 0
+    
+    print("\n===== Training Scattering-Only LSTM Model =====")
+    for epoch in range(lstm_params['epochs']):
+        epoch_loss = 0
+        batch_count = 0
+        
+        for inputs_batch, targets_batch in scattering_only_loader:
+            batch_count += 1
+            
+            inputs_batch = inputs_batch.to(device)
+            targets_batch = targets_batch.to(device)
+            
+            optimizer_scattering_only.zero_grad()
+            
+            outputs = scattering_only_model(inputs_batch)
+            loss = criterion(outputs, targets_batch)
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(scattering_only_model.parameters(), 1.0)
+            optimizer_scattering_only.step()
+            
+            epoch_loss += loss.item()
+            
+            if batch_count % 20 == 0:
+                print(f"Epoch {epoch+1}/{lstm_params['epochs']}, Batch {batch_count}/{len(scattering_only_loader)}, Loss: {loss.item():.6f}")
+        
+        avg_epoch_loss = epoch_loss / batch_count
+        print(f"Epoch {epoch+1}/{lstm_params['epochs']} complete. Avg loss: {avg_epoch_loss:.6f}")
+        
+        if avg_epoch_loss < best_loss_scattering_only:
+            best_loss_scattering_only = avg_epoch_loss
+            patience_counter_scattering_only = 0
+            torch.save(scattering_only_model.state_dict(), 'best_energy_forecast_scattering_only_model.pt')
+        else:
+            patience_counter_scattering_only += 1
+            print(f"Early stopping patience: {patience_counter_scattering_only}/{early_stop_patience}")
+            if patience_counter_scattering_only >= early_stop_patience:
+                print("Early stopping triggered!")
+                break
+    
+    # Loading the best pure scattering model
+    scattering_only_model.load_state_dict(torch.load('best_energy_forecast_scattering_only_model.pt'))
+    
+    scattering_only_training_time = time.time() - scattering_only_start_time
+    scattering_only_training_times.append(scattering_only_training_time)
+    print(f"Scattering-Only LSTM training completed in {scattering_only_training_time:.2f} seconds")
+    
     # Finally, returning to the test data and scaling it
     test_data_scaled = scaler.transform(test_data)
     
@@ -547,22 +704,32 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
             scattering_input = window_tensor.reshape(1, 1, -1)
             scattering_coeffs = scattering(scattering_input)
             
-            # Reshaping again, for the LSTM input
-            scattering_input = scattering_coeffs.reshape(1, scattering_coeffs.shape[2], 1)
+            # Reshaping again, for the LSTM and scattering input
+            scattering_coef_input = scattering_coeffs.reshape(1, scattering_coeffs.shape[2], 1)
             raw_input = window_tensor.reshape(1, -1, 1)
             
+            # Doing the forecast with the dual input
             lstm_scattering_model.eval()
-            lstm_scattering_pred_scaled = lstm_scattering_model(scattering_input, raw_input).cpu().numpy().flatten()
+            lstm_scattering_pred_scaled = lstm_scattering_model(scattering_coef_input, raw_input).cpu().numpy().flatten()
             
             lstm_scattering_pred = scaler.inverse_transform(lstm_scattering_pred_scaled.reshape(-1, 1)).flatten()
             lstm_scattering_forecasts.append(lstm_scattering_pred[0])
             
+            # Doing the pure LSTM forecast
             pure_lstm_model.eval()
             pure_lstm_input = window_tensor.reshape(1, -1, 1)
             pure_lstm_pred_scaled = pure_lstm_model(pure_lstm_input).cpu().numpy().flatten()
             
             pure_lstm_pred = scaler.inverse_transform(pure_lstm_pred_scaled.reshape(-1, 1)).flatten()
             pure_lstm_forecasts.append(pure_lstm_pred[0])
+            
+            # Doing the pure scattering LSTM forecast
+            scattering_only_model.eval()
+            scattering_only_input = scattering_coeffs.reshape(1, scattering_coeffs.shape[2], 1)
+            scattering_only_pred_scaled = scattering_only_model(scattering_only_input).cpu().numpy().flatten()
+            
+            scattering_only_pred = scaler.inverse_transform(scattering_only_pred_scaled.reshape(-1, 1)).flatten()
+            scattering_only_forecasts.append(scattering_only_pred[0])
         
         arima_start_time = time.time()
         
@@ -586,16 +753,17 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
         
         if (i + 1) % 5 == 0 or i == 0:
             print(f"Completed forecast {i+1}/{total_forecast_points}")
-            print(f"LSTM+Scattering: {lstm_scattering_forecasts[-1]:.2f}, Pure LSTM: {pure_lstm_forecasts[-1]:.2f}, Actual: {actual[0]:.2f}")
+            print(f"LSTM+Scattering: {lstm_scattering_forecasts[-1]:.2f}, Scattering-Only: {scattering_only_forecasts[-1]:.2f}, Pure LSTM: {pure_lstm_forecasts[-1]:.2f}, Actual: {actual[0]:.2f}")
     
     weight_analysis = analyze_model_weights(lstm_scattering_model, lstm_params)
     
     training_times = {
         'lstm_scattering': lstm_scattering_training_times, 
+        'scattering_only': scattering_only_training_times,
         'pure_lstm': pure_lstm_training_times, 
         'arima': arima_training_times
     }
-    return lstm_scattering_forecasts, pure_lstm_forecasts, actual_values, arima_forecasts, training_times, lstm_scattering_model, pure_lstm_model
+    return lstm_scattering_forecasts, pure_lstm_forecasts, scattering_only_forecasts, actual_values, arima_forecasts, training_times, lstm_scattering_model, pure_lstm_model, scattering_only_model
 
 if __name__ == "__main__":
     global_seed = 42 # Claaaaaaasic
@@ -641,49 +809,84 @@ if __name__ == "__main__":
 
     print("Starting forecasting...")
     print(f"Global random seed: {global_seed}")
-    
     start_time = time.time()
-    lstm_scattering_forecasts, pure_lstm_forecasts, actual_values, arima_forecasts, training_times, lstm_scattering_model, pure_lstm_model = rolling_window_forecast_scattering_lstm(
+    lstm_scattering_forecasts, pure_lstm_forecasts, scattering_only_forecasts, actual_values, arima_forecasts, training_times, lstm_scattering_model, pure_lstm_model, scattering_only_model = rolling_window_forecast_scattering_lstm(
         train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params, random_seed=global_seed
     )
     end_time = time.time()
-    
     print(f"Total execution time: {end_time - start_time:.2f} seconds")
-
-    metrics = evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forecasts, arima_forecasts)
-
+    
+    metrics = evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forecasts, scattering_only_forecasts, arima_forecasts)
+    
     # A couple simple plots
     plt.figure(figsize=(12, 6))
     test_dates = test_data.index[:len(lstm_scattering_forecasts)]
-
     plt.plot(test_dates, actual_values, label='Actual Energy', color='blue', linewidth=2)
     plt.plot(test_dates, lstm_scattering_forecasts, label='LSTM+Wavelet Forecast', color='red', linestyle='--')
+    plt.plot(test_dates, scattering_only_forecasts, label='Scattering-Only LSTM Forecast', color='orange', linestyle='--')
     plt.plot(test_dates, pure_lstm_forecasts, label='Pure LSTM Forecast', color='purple', linestyle=':')
     plt.plot(test_dates, arima_forecasts, label='ARIMA Forecast', color='green', linestyle='-.')
-
     plt.title('US Hourly Energy Forecasting', fontsize=14)
     plt.xlabel('Date', fontsize=12)
     plt.ylabel('Energy (MW)', fontsize=12)
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-
+    
     plt.figtext(0.15, 0.15,
-               f'LSTM+Wavelet RMSE: {metrics["lstm_scattering"]["rmse"]:.2f}\n'
-               f'Pure LSTM RMSE: {metrics["pure_lstm"]["rmse"]:.2f}\n'
-               f'ARIMA RMSE: {metrics["arima"]["rmse"]:.2f}',
-               bbox=dict(facecolor='white', alpha=0.8))
-
+        f'LSTM+Wavelet RMSE: {metrics["lstm_scattering"]["rmse"]:.2f}\n'
+        f'Scattering-Only RMSE: {metrics["scattering_only"]["rmse"]:.2f}\n'
+        f'Pure LSTM RMSE: {metrics["pure_lstm"]["rmse"]:.2f}\n'
+        f'ARIMA RMSE: {metrics["arima"]["rmse"]:.2f}',
+        bbox=dict(facecolor='white', alpha=0.8))
+    
     plt.figure(figsize=(15, 10))
     
     plt.subplot(2, 2, 1)
-    mse_values = [metrics["lstm_scattering"]["mse"], metrics["pure_lstm"]["mse"], metrics["arima"]["mse"]]
-    plt.bar(['LSTM+Wavelet', 'Pure LSTM', 'ARIMA'], mse_values, color=['#e74c3c', '#8e44ad', '#27ae60'])
+    mse_values = [metrics["lstm_scattering"]["mse"], metrics["scattering_only"]["mse"], 
+                 metrics["pure_lstm"]["mse"], metrics["arima"]["mse"]]
+    plt.bar(['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'ARIMA'], 
+           mse_values, color=['#e74c3c', '#f39c12', '#8e44ad', '#27ae60'])
     plt.title('Mean Squared Error')
     plt.ylabel('MSE')
-
+    
     plt.subplot(2, 2, 2)
-    mae_values = [metrics["lstm_scattering"]["mae"], metrics["pure_lstm"]["mae"], metrics["arima"]["mae"]]
-    plt.bar(['LSTM+Wavelet', 'Pure LSTM', 'ARIMA'], mae_values, color=['#e74c3c', '#8e44ad', '#27ae60'])
+    mae_values = [metrics["lstm_scattering"]["mae"], metrics["scattering_only"]["mae"], 
+                 metrics["pure_lstm"]["mae"], metrics["arima"]["mae"]]
+    plt.bar(['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'ARIMA'], 
+           mae_values, color=['#e74c3c', '#f39c12', '#8e44ad', '#27ae60'])
     plt.title('Mean Absolute Error')
     plt.ylabel('MAE')
+    
+    plt.subplot(2, 2, 3)
+    rmse_values = [metrics["lstm_scattering"]["rmse"], metrics["scattering_only"]["rmse"], 
+                  metrics["pure_lstm"]["rmse"], metrics["arima"]["rmse"]]
+    plt.bar(['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'ARIMA'], 
+           rmse_values, color=['#e74c3c', '#f39c12', '#8e44ad', '#27ae60'])
+    plt.title('Root Mean Squared Error')
+    plt.ylabel('RMSE')
+    
+    plt.subplot(2, 2, 4)
+    dir_acc_values = [metrics["lstm_scattering"]["dir_acc"], metrics["scattering_only"]["dir_acc"], 
+                     metrics["pure_lstm"]["dir_acc"], metrics["arima"]["dir_acc"]]
+    plt.bar(['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'ARIMA'], 
+           dir_acc_values, color=['#e74c3c', '#f39c12', '#8e44ad', '#27ae60'])
+    plt.title('Directional Accuracy')
+    plt.ylabel('Accuracy (%)')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    plt.figure(figsize=(10, 6))
+    avg_training_times = [
+        np.mean(training_times['lstm_scattering']),
+        np.mean(training_times['scattering_only']),
+        np.mean(training_times['pure_lstm']),
+        np.mean(training_times['arima'])
+    ]
+    plt.bar(['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'ARIMA'], 
+           avg_training_times, color=['#e74c3c', '#f39c12', '#8e44ad', '#27ae60'])
+    plt.title('Average Training Times')
+    plt.ylabel('Time (seconds)')
+    plt.grid(axis='y', alpha=0.3)
+    plt.show()
