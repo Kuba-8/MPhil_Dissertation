@@ -6,42 +6,57 @@ import numpy as np
 from statsmodels.tsa.stattools import acf
 from torch.utils.data import Dataset
 
-
 class TimeSeriesDataset(Dataset):
     """
     Universal dataset class for time series forecasting that can handle:
-    1. Combined scattering + raw data (for dual-input LSTM)
-    2. Raw data only (for pure LSTM)
-    3. Scattering coefficients only (for scattering-only models)
-    
-    Args:
-        data (np.ndarray): Time series data as a numpy array
-        window_size (int): Size of the input window
-        forecast_horizon (int): Number of steps to forecast
-        mode (str): One of 'combined', 'raw_only', or 'scattering_only'
-        scattering_transform (kymatio.torch.Scattering1D, optional): Scattering transform object
-        step (int): Step size for windowing the data, also known as the stride
-
+        1. Combined scattering + raw data (for dual-input LSTM)
+        2. Raw data only (for pure LSTM)
+        3. Scattering coefficients only (for scattering-only models)
+        
+        Args:
+            data (np.ndarray): Time series data as a numpy array
+            window_size (int): Size of the input window
+            forecast_horizon (int): Number of steps to forecast
+            mode (str): One of 'combined', 'raw_only', or 'scattering_only'
+            scattering_transform (kymatio.torch.Scattering1D, optional): Scattering transform object
+            step (int): Step size for windowing the data, also known as the stride
     """
-
-    def __init__(self, data, window_size, forecast_horizon, mode='combined', 
-                 scattering_transform=None, step=1):
+    def __init__(self, data, forecast_horizon, mode='dual', 
+                 window_size=None, time_lags=30, scattering_transform=None, 
+                 step=1, energy_threshold=0.9, high_energy_indices=None):
+        """
+        Initialize the unified dataset
+        
+        """
         self.data = data
-        self.window_size = window_size
         self.forecast_horizon = forecast_horizon
         self.mode = mode
+        self.window_size = window_size
+        self.time_lags = time_lags
         self.scattering = scattering_transform
         self.step = step
+        self.energy_threshold = energy_threshold
+        self.high_energy_indices = high_energy_indices
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        valid_modes = ['combined', 'raw_only', 'scattering_only']
-        if mode not in valid_modes:
-            raise ValueError(f"Mode must be one of {valid_modes}, got {mode}")
+        if mode in ['dual', 'scattering_only']:
+            if window_size is None or scattering_transform is None:
+                raise ValueError(f"window_size and scattering_transform required for mode '{mode}'")
         
-        if (mode == 'combined' or mode == 'scattering_only') and scattering_transform is None:
-            raise ValueError(f"Scattering transform must be provided for mode '{mode}'")
+        if mode in ['dual', 'raw_only']:
+            if time_lags is None:
+                raise ValueError(f"time_lags required for mode '{mode}'")
         
-        self.indices = list(range(0, len(data) - window_size - forecast_horizon + 1, step))
+        if mode == 'dual':
+            max_lookback = max(window_size, time_lags)
+        elif mode == 'raw_only':
+            max_lookback = time_lags
+        elif mode == 'scattering_only':
+            max_lookback = window_size
+        else:
+            raise ValueError(f"Invalid mode: {mode}. Must be 'dual', 'raw_only', or 'scattering_only'")
+        
+        self.indices = list(range(0, len(data) - max_lookback - forecast_horizon + 1, step))
         
     def __len__(self):
         return len(self.indices)
@@ -49,29 +64,53 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         start_idx = self.indices[idx]
         
-        window = self.data[start_idx:start_idx + self.window_size].flatten()
-        target = self.data[start_idx + self.window_size:start_idx + self.window_size + self.forecast_horizon].flatten()
+        scattering_coeffs = None
+        lag_window_tensor = None
         
-        window_tensor = torch.tensor(window, dtype=torch.float32)
+        if self.mode == 'dual':
+            target_start = start_idx + self.window_size
+        elif self.mode == 'raw_only':
+            target_start = start_idx + self.time_lags
+        elif self.mode == 'scattering_only':
+            target_start = start_idx + self.window_size
+            
+        target = self.data[target_start:target_start + self.forecast_horizon].flatten()
         target_tensor = torch.tensor(target, dtype=torch.float32)
         
-        if self.mode == 'raw_only':
-            raw_window = self.data[start_idx:start_idx + self.window_size]
-            raw_tensor = torch.tensor(raw_window, dtype=torch.float32)
-            return raw_tensor.reshape(-1, 1), target_tensor
+        if self.mode in ['dual', 'scattering_only']:
+            scatter_window = self.data[start_idx:start_idx + self.window_size].flatten()
+            scatter_window_tensor = torch.tensor(scatter_window, dtype=torch.float32)
+            
+            with torch.no_grad():
+                scattering_input = scatter_window_tensor.unsqueeze(0).unsqueeze(0)
+                scattering_coeffs = self.scattering(scattering_input)
+                
+                if self.high_energy_indices is not None:
+                    indices_tensor = torch.tensor(self.high_energy_indices, dtype=torch.long, device=self.device)
+                    flat_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[0], scattering_coeffs.shape[2]).contiguous()
+                    filtered_coeffs = torch.index_select(flat_coeffs, 1, indices_tensor)
+                    scattering_coeffs = filtered_coeffs.reshape(filtered_coeffs.shape[1], 1)
+                else:
+                    scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[2], 1)
         
-        with torch.no_grad():
-            scattering_input = window_tensor.unsqueeze(0).unsqueeze(0)
-            scattering_coeffs = self.scattering(scattering_input)
-            
-            if self.mode == 'combined':
-                scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[0], 
-                                                             scattering_coeffs.shape[2], 1)
-                return scattering_coeffs[0], window_tensor.reshape(-1, 1), target_tensor
-            
-            elif self.mode == 'scattering_only':
-                scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[2], 1)
-                return scattering_coeffs, target_tensor
+        if self.mode in ['dual', 'raw_only']:
+            if self.mode == 'dual':
+                lag_start = start_idx + self.window_size - self.time_lags
+                lag_end = start_idx + self.window_size
+            else:
+                lag_start = start_idx
+                lag_end = start_idx + self.time_lags
+                
+            lag_window = self.data[lag_start:lag_end].flatten()
+            lag_window_tensor = torch.tensor(lag_window, dtype=torch.float32)
+            lag_window_tensor = lag_window_tensor.reshape(1, -1)
+        
+        if self.mode == 'dual':
+            return scattering_coeffs, lag_window_tensor, target_tensor
+        elif self.mode == 'raw_only':
+            return lag_window_tensor, target_tensor
+        elif self.mode == 'scattering_only':
+            return scattering_coeffs, target_tensor
 
 def visualize_scattering_information(scattering, data, scattering_params, window_size, sample_indices=None, num_samples=5):
     """
