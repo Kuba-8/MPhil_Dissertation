@@ -61,6 +61,104 @@ def find_optimal_sarima(data, max_p=3, max_d=2, max_q=3, max_P=2, max_D=1, max_Q
     print(f"Best SARIMA{best_params}x{best_seasonal_params} with AIC: {best_aic:.2f}")
     return best_params, best_seasonal_params
 
+# Defining the LSTM model - using a dual input architecture
+# Basically, computing a separate LSTM for the scattering coefficients and raw time series
+# And combining them in a single fully connected layer
+# Now though, using more fully connected layers and fewer LSTM layers essentially, motivated by the literature (see paper)
+class ScatteringLSTM(nn.Module):
+    def __init__(self, scattering_dim, lag_features_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
+        super(ScatteringLSTM, self).__init__()
+        self.lstm_scattering = nn.LSTM(1, hidden_dim, num_layers=num_layers, 
+                                      batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+        self.lstm_raw = nn.LSTM(lag_features_dim, hidden_dim, num_layers=num_layers, 
+                               batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+        
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc1 = nn.Linear(hidden_dim * 2, 100)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(100, 60)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(60, 50)
+        self.relu3 = nn.ReLU()
+        self.fc_out = nn.Linear(50, output_dim)
+
+    def forward(self, scattering_x, raw_x):
+        scattering_out, _ = self.lstm_scattering(scattering_x)
+        scattering_out = scattering_out[:, -1, :]
+
+        raw_out, _ = self.lstm_raw(raw_x)
+        raw_out = raw_out[:, -1, :]
+
+        combined = torch.cat((scattering_out, raw_out), dim=1)
+        combined = self.dropout(combined)
+        
+        x = self.relu1(self.fc1(combined))
+        x = self.relu2(self.fc2(x))
+        x = self.relu3(self.fc3(x))
+        output = self.fc_out(x)
+        
+        return output
+
+# Defining the class for the Second LSTM model, that only takes the raw time series as input
+# Architecture has similarly changed to a more standard LSTM
+# Based on the literature essentially, decided prior model was very poorly motivated
+class PureLSTM(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
+        super(PureLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=num_layers, 
+                           batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+        
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc1 = nn.Linear(hidden_dim, 100)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(100, 60)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(60, 50)
+        self.relu3 = nn.ReLU()
+        self.fc_out = nn.Linear(50, output_dim)
+
+    def forward(self, x):
+        lstm_out, _ = self.lstm(x)
+        lstm_out = lstm_out[:, -1, :]
+        
+        x = self.dropout(lstm_out)
+        x = self.relu1(self.fc1(x))
+        x = self.relu2(self.fc2(x))
+        x = self.relu3(self.fc3(x))
+        output = self.fc_out(x)
+        
+        return output
+
+# Defining the class for the Third LSTM model, which only takes the scattering coefficients as inputs
+# Architecture has similarly changed to a more standard LSTM
+# Based on the literature essentially, decided prior model was very poorly motivated
+class ScatteringOnlyLSTM(nn.Module):
+    def __init__(self, scattering_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
+        super(ScatteringOnlyLSTM, self).__init__()
+        self.lstm = nn.LSTM(1, hidden_dim, num_layers=num_layers, 
+                          batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+        
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc1 = nn.Linear(hidden_dim, 100)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(100, 60)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(60, 50)
+        self.relu3 = nn.ReLU()
+        self.fc_out = nn.Linear(50, output_dim)
+
+    def forward(self, x):
+        lstm_out, _ = self.lstm(x)
+        lstm_out = lstm_out[:, -1, :]
+        
+        x = self.dropout(lstm_out)
+        x = self.relu1(self.fc1(x))
+        x = self.relu2(self.fc2(x))
+        x = self.relu3(self.fc3(x))
+        output = self.fc_out(x)
+        
+        return output
+
 def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params, random_seed=42):
     """
     Optimized version: Generates rolling window forecasts using Wavelet Scattering 
@@ -105,63 +203,6 @@ def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     scattering.to(device)
-    
-    # Defining the LSTM model - using a dual input architecture
-    # Basically, computing a separate LSTM for the scattering coefficients and raw time series
-    # And combining them in a single fully connected layer
-    class ScatteringLSTM(nn.Module):
-        def __init__(self, scattering_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
-            super(ScatteringLSTM, self).__init__()
-            self.lstm_scattering = nn.LSTM(1, hidden_dim, num_layers=num_layers, 
-                                         batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
-            self.lstm_raw = nn.LSTM(1, hidden_dim, num_layers=num_layers, 
-                                  batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
-            self.dropout = nn.Dropout(dropout_rate)
-            self.fc = nn.Linear(hidden_dim * 2, output_dim)
-
-        def forward(self, scattering_x, raw_x):
-            scattering_out, _ = self.lstm_scattering(scattering_x)
-            scattering_out = scattering_out[:, -1, :]
-
-            raw_out, _ = self.lstm_raw(raw_x)
-            raw_out = raw_out[:, -1, :]
-
-            combined = torch.cat((scattering_out, raw_out), dim=1)
-            combined = self.dropout(combined)
-            output = self.fc(combined)
-            return output
-    
-    # Defining the class for the Second LSTM model, that only takes the raw time series as input
-    class PureLSTM(nn.Module):
-        def __init__(self, input_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
-            super(PureLSTM, self).__init__()
-            self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=num_layers, 
-                               batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
-            self.dropout = nn.Dropout(dropout_rate)
-            self.fc = nn.Linear(hidden_dim, output_dim)
-
-        def forward(self, x):
-            lstm_out, _ = self.lstm(x)
-            lstm_out = lstm_out[:, -1, :]
-            lstm_out = self.dropout(lstm_out)
-            output = self.fc(lstm_out)
-            return output
-    
-    # Defining the class for the Third LSTM model, which only takes the scattering coefficients as inputs
-    class ScatteringOnlyLSTM(nn.Module):
-        def __init__(self, scattering_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
-            super(ScatteringOnlyLSTM, self).__init__()
-            self.lstm = nn.LSTM(1, hidden_dim, num_layers=num_layers, 
-                              batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
-            self.dropout = nn.Dropout(dropout_rate)
-            self.fc = nn.Linear(hidden_dim, output_dim)
-
-        def forward(self, x):
-            lstm_out, _ = self.lstm(x)
-            lstm_out = lstm_out[:, -1, :]
-            lstm_out = self.dropout(lstm_out)
-            output = self.fc(lstm_out)
-            return output
     
     step_size = 4
     train_dataset = TimeSeriesDataset(
