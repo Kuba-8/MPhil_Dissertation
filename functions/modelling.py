@@ -5,15 +5,61 @@ import pandas as pd
 import numpy as np
 
 from kymatio.torch import Scattering1D
-from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import time
 from sklearn.preprocessing import MinMaxScaler
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 import random
+import warnings
 
 from functions.data_processing import TimeSeriesDataset
 from functions.evaluation import analyze_model_weights
+
+def find_optimal_sarima(data, max_p=3, max_d=2, max_q=3, max_P=2, max_D=1, max_Q=2, seasonal_period=24):
+    """
+    Simple function for finding the optimal SARIMA parameters using grid search with AIC criterion
+
+    """
+    warnings.filterwarnings("ignore")
+    
+    # Generate each and every parameter combination
+    # P, D, Q are seasonal parameters, whereas p, d, q are non-seasonal, 
+    # standard ARIMA parameters
+
+    p = d = q = range(0, max_p + 1)
+    P = D = Q = range(0, max_P + 1)
+    
+    pdq = list(itertools.product(p, d, q))
+    seasonal_pdq = list(itertools.product(P, D, Q, [seasonal_period]))
+    
+    best_aic = float('inf')
+    best_params = None
+    best_seasonal_params = None
+    
+    print("Searching for optimal SARIMA parameters...")
+    tested_count = 0
+    
+    for param in pdq:
+        for param_seasonal in seasonal_pdq:
+            try:
+                model = SARIMAX(data, order=param, seasonal_order=param_seasonal)
+                results = model.fit(disp=False, maxiter=50)
+                
+                if results.aic < best_aic:
+                    best_aic = results.aic
+                    best_params = param
+                    best_seasonal_params = param_seasonal
+                
+                tested_count += 1
+                if tested_count % 20 == 0:
+                    print(f"Tested {tested_count} parameter combinations...")
+                    
+            except Exception:
+                continue
+    
+    print(f"Best SARIMA{best_params}x{best_seasonal_params} with AIC: {best_aic:.2f}")
+    return best_params, best_seasonal_params
 
 def rolling_window_forecast_scattering_lstm(train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params, random_seed=42):
     """
