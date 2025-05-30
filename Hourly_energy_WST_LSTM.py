@@ -9,13 +9,25 @@ import random
 from functions import modelling as mdl
 from functions import evaluation as eval
 
+def set_random_seeds(seed_value=42):
+    """
+    Setting seeds across all random number generators,
+    to minimize, as much as I can, replicability issues
+    """
+    random.seed(seed_value)
+    np.random.seed(seed_value)
+    torch.manual_seed(seed_value)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed_value)
+        torch.cuda.manual_seed_all(seed_value)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    print(f"Random seed set to: {seed_value}")
+
 if __name__ == "__main__":
 
     GLOBAL_SEED = 42 # Claaaaaaasic
-
-    torch.manual_seed(GLOBAL_SEED)
-    np.random.seed(GLOBAL_SEED)
-    random.seed(GLOBAL_SEED)
+    set_random_seeds(GLOBAL_SEED)
     
     df = pd.read_excel("data/Hourly_energy_c_2022-25.xlsx")
     df = df[['datetime_beginning_utc', 'mw']]
