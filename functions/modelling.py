@@ -78,19 +78,28 @@ def find_optimal_sarima(data, max_p=3, max_d=2, max_q=3, max_P=2, max_D=1, max_Q
     return best_params, best_seasonal_params
 
 # Defining the LSTM model - using a dual input architecture
-# Basically, computing a separate LSTM for the scattering coefficients and raw time series
-# And combining them in a single fully connected layer
-# Now though, using more fully connected layers and fewer LSTM layers essentially, motivated by the literature (see paper)
+# In contrast to before, I have realised that there is no advantag to using the LSTM layers on the scattering coefficients
+# computed at each point, as they do not really have a direct "sequence" to them.
+# Hence, I have updated the model to process the scattering coefficients as features of each time step
+# (a bit like including a random exogenous variable from t-1 each time)
 class ScatteringLSTM(nn.Module):
     def __init__(self, scattering_dim, lag_features_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
         super(ScatteringLSTM, self).__init__()
-        self.lstm_scattering = nn.LSTM(1, hidden_dim, num_layers=num_layers, 
-                                      batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
+        
+        self.scattering_processor = nn.Sequential(
+            nn.Linear(scattering_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, hidden_dim//2),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
         self.lstm_raw = nn.LSTM(lag_features_dim, hidden_dim, num_layers=num_layers, 
                                batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
         
         self.dropout = nn.Dropout(dropout_rate)
-        self.fc1 = nn.Linear(hidden_dim * 2, 100)
+        self.fc1 = nn.Linear(hidden_dim//2 + hidden_dim, 100)
         self.relu1 = nn.ReLU()
         self.fc2 = nn.Linear(100, 60)
         self.relu2 = nn.ReLU()
@@ -99,9 +108,9 @@ class ScatteringLSTM(nn.Module):
         self.fc_out = nn.Linear(50, output_dim)
 
     def forward(self, scattering_x, raw_x):
-        scattering_out, _ = self.lstm_scattering(scattering_x)
-        scattering_out = scattering_out[:, -1, :]
-
+        scattering_features = scattering_x.squeeze(-1)
+        scattering_out = self.scattering_processor(scattering_features)
+        
         raw_out, _ = self.lstm_raw(raw_x)
         raw_out = raw_out[:, -1, :]
 
@@ -187,6 +196,7 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
     Modified to implement time series cross validation and random starting points within the data for evaluation
     """
     
+    GLOBAL_SEED = 42
     set_random_seeds(GLOBAL_SEED)
     
     # Fitting the scaler only on the training data, for now
