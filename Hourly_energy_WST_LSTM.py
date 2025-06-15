@@ -25,7 +25,7 @@ if __name__ == "__main__":
     test_start_date = pd.to_datetime('2022-04-01 00:00:00')
 
     train_data = df[df.index < test_start_date]
-    test_data = df[df.index >= test_start_date].iloc[:400]
+    test_data = df[df.index >= test_start_date]
 
     print(f"Training data: {len(train_data)} points")
     print(f"Test data: {len(test_data)} points")
@@ -39,8 +39,10 @@ if __name__ == "__main__":
     energy_threshold = 0.99
     
     # Multi-step forecasting parameters
-    multi_step_forecast = False
-    forecast_steps = 24
+    multi_step_forecast = True
+    FORECAST_STEPS = 772
+    forecast_steps = 772
+    NUMBER_OF_TRIALS_RANDOM_SEARCH = 7
     num_random_starts = 20
     
     scattering_params = {
@@ -50,12 +52,12 @@ if __name__ == "__main__":
         'shape': (window_size,),
     }
     
-    lstm_params = {
-        'hidden_dim': 40,
-        'dropout_rate': 0.3,
-        'learning_rate': 0.003,
-        'epochs': 200,
+    lstm_params_grid = {
+        'hidden_dims': [20, 40, 60],
+        'dropout_rates': [0.2, 0.3, 0.4],
+        'learning_rates': [0.001, 0.003, 0.005],
         'num_layers': 1,
+        'full_epochs': 150
     }
 
     print("Starting forecasting with time-series cross validation and random starting points...")
@@ -63,17 +65,64 @@ if __name__ == "__main__":
     print(f"Number of random starting points: {num_random_starts}")
     start_time = time.time()
 
-    lstm_scattering_forecasts, pure_lstm_forecasts, scattering_only_forecasts, actual_values, sarima_forecasts, training_times, lstm_scattering_model, pure_lstm_model, scattering_only_model = mdl.rolling_window_forecast_scattering_lstm_cv(
-        train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params, 
+    (all_lstm_scattering_sequences, all_pure_lstm_sequences, all_scattering_only_sequences, 
+     all_actual_sequences, all_sarima_sequences, training_times, lstm_scattering_model, 
+     pure_lstm_model, scattering_only_model, random_start_indices, 
+     best_config) = mdl.rolling_window_forecast_scattering_lstm_cv(
+        train_data, test_data, window_size, forecast_horizon, scattering_params, lstm_params_grid, 
         time_lags=time_lags, random_seed=GLOBAL_SEED, step_size=step_size, energy_threshold=energy_threshold,
-        multi_step=multi_step_forecast, forecast_steps=forecast_steps, n_splits=5, 
+        multi_step=multi_step_forecast, forecast_steps=forecast_steps, n_splits=3, 
         num_random_starts=num_random_starts
     )
 
     end_time = time.time()
     print(f"Total execution time: {end_time - start_time:.2f} seconds")
 
-    metrics = eval.evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forecasts, scattering_only_forecasts, sarima_forecasts)
+    all_metrics = []
+    for i in range(len(all_actual_sequences)):
+        metrics = eval.evaluate_forecasts(
+            all_actual_sequences[i], 
+            all_lstm_scattering_sequences[i], 
+            all_pure_lstm_sequences[i], 
+            all_scattering_only_sequences[i], 
+            all_sarima_sequences[i]
+        )
+        all_metrics.append(metrics)
+
+    avg_metrics = {
+        'lstm_scattering': {},
+        'scattering_only': {},
+        'pure_lstm': {},
+        'sarima': {}
+    }
+
+    for model in avg_metrics.keys():
+        for metric in ['mse', 'rmse', 'mae', 'mape', 'dir_acc']:
+            values = [m[model][metric] for m in all_metrics]
+            avg_metrics[model][metric] = np.mean(values)
+            avg_metrics[model][f'{metric}_std'] = np.std(values)
+
+    print(f"\n===== Averaged Metrics Across {num_random_starts} Starting Points =====")
+    for model in ['lstm_scattering', 'scattering_only', 'pure_lstm', 'sarima']:
+        model_name = {
+            'lstm_scattering': 'LSTM+Scattering',
+            'scattering_only': 'Scattering-Only LSTM', 
+            'pure_lstm': 'Pure LSTM',
+            'sarima': 'SARIMA'
+        }[model]
+        
+        print(f"\n{model_name} Metrics (Mean ± Std):")
+        print(f"  MSE: {avg_metrics[model]['mse']:.2f} ± {avg_metrics[model]['mse_std']:.2f}")
+        print(f"  RMSE: {avg_metrics[model]['rmse']:.2f} ± {avg_metrics[model]['rmse_std']:.2f}")
+        print(f"  MAE: {avg_metrics[model]['mae']:.2f} ± {avg_metrics[model]['mae_std']:.2f}")
+        print(f"  MAPE: {avg_metrics[model]['mape']:.2f}% ± {avg_metrics[model]['mape_std']:.2f}%")
+        print(f"  Directional Accuracy: {avg_metrics[model]['dir_acc']:.2f}% ± {avg_metrics[model]['dir_acc_std']:.2f}%")
+
+    lstm_scattering_forecasts = np.mean(all_lstm_scattering_sequences, axis=0)
+    pure_lstm_forecasts = np.mean(all_pure_lstm_sequences, axis=0)
+    scattering_only_forecasts = np.mean(all_scattering_only_sequences, axis=0)
+    sarima_forecasts = np.mean(all_sarima_sequences, axis=0)
+    actual_values = np.mean(all_actual_sequences, axis=0)
 
     # This for-loop generates four sample forccasts 
 
