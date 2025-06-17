@@ -112,7 +112,7 @@ class TimeSeriesDataset(Dataset):
         elif self.mode == 'scattering_only':
             return scattering_coeffs, target_tensor
 
-def visualize_scattering_information(scattering, data, scattering_params, window_size, sample_indices=None, num_samples=5):
+def visualize_scattering_information(scattering, train_data, test_data, scattering_params, window_size, sample_indices=None, num_samples=5):
     """
     A bit of an EDA (exploratory data ananlysis) function for graphing the data,
     alongside the information extracted by the wavelet scattering transform
@@ -121,12 +121,17 @@ def visualize_scattering_information(scattering, data, scattering_params, window
     Visualize the information content extracted by wavelet scattering transforms.
     
     """
-    if isinstance(data, pd.DataFrame):
-        data_values = data.values
-        time_index = data.index
+    # Combining the train and test data to allow for complete EDA 
+
+    complete_data = pd.concat([train_data, test_data])
+    train_end_idx = len(train_data)
+    
+    if isinstance(complete_data, pd.DataFrame):
+        data_values = complete_data.values
+        time_index = complete_data.index
     else:
-        data_values = data
-        time_index = range(len(data.flatten()))
+        data_values = complete_data
+        time_index = range(len(complete_data.flatten()))
     
     # Does not want to use my GPU for some reason, so set a backup
     try:
@@ -138,42 +143,50 @@ def visualize_scattering_information(scattering, data, scattering_params, window
     
     # Some simple, raw data plots to begin with
 
-    plt.figure(figsize=(22, 20))
+    plt.figure(figsize=(24, 22))
 
-    # Two years of raw tiem series data, for two random years (e.g. 2016-18)
+    # Highlighting the train-test split for the time series
 
     plt.subplot(5, 2, 1)
     data_flat = data_values.flatten()
     
-    start_2016 = pd.to_datetime('2016-01-01')
-    end_2018 = pd.to_datetime('2018-01-01')
-    mask_2016_2018 = (data.index >= start_2016) & (data.index < end_2018)
-    subset_data = data[mask_2016_2018]
-    plt.plot(subset_data.index, subset_data.values.flatten())
-    plt.title(f'Energy Data 2016-2018 ({len(subset_data)} points)', fontsize=14)
-    plt.xlabel('Date/Time')
-    plt.ylabel('Energy Load (kWh)')
+    train_data_flat = train_data.values.flatten()
+    test_data_flat = test_data.values.flatten()
+    
+    plt.plot(train_data.index, train_data_flat, color='blue', alpha=0.7, linewidth=0.8, label='Training Data')
+    plt.plot(test_data.index, test_data_flat, color='orange', alpha=0.7, linewidth=0.8, label='Test Data')
+    plt.title(f'Complete Dataset - Train: {len(train_data_flat)} pts, Test: {len(test_data_flat)} pts', fontsize=14)
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('Energy Load (kWh)', fontsize=12)
+    plt.legend(fontsize=9)
     plt.grid(True, alpha=0.3)
     
-    # All (training) data in single plot... should I just use the whole dataset?
+    # One years of raw tiem series data, for two random years (e.g. 2017)
 
     plt.subplot(5, 2, 2)
-    plt.plot(time_index, data_flat, alpha=0.7, linewidth=0.5)
-    plt.title(f'Complete Dataset - All {len(data_flat)} Points (~20 Years)', fontsize=14)
-    plt.xlabel('Date')
-    plt.ylabel('Energy Load (kWh)')
+    start_2016 = pd.to_datetime('2017-01-01')
+    end_2018 = pd.to_datetime('2018-01-01')
+
+    mask_2016_2018 = (complete_data.index >= start_2016) & (complete_data.index < end_2018)
+    subset_data = complete_data[mask_2016_2018]
+    plt.plot(subset_data.index, subset_data.values.flatten())
+    plt.title(f'Energy Data 2017-2018 ({len(subset_data)} points)', fontsize=14)
+    plt.xlabel('Date/Time', fontsize=12)
+    plt.ylabel('Energy load (kWh)', fontsize=12)
     plt.grid(True, alpha=0.3)
     
     # ACF plot, using first 5000 points and seasonally adjusted series (with CI's)
     # (plotted it before, and ACF just went up and down like the signal, which is unhelpful)
+    # So, I am basically taking the 24th difference of the data to remove daily seasonality 
+    # As per standard practice 
+
     plt.subplot(5, 2, 3)
     acf_data = data_flat[:min(5000, len(data_flat))]
     
     acf_data_seasonal = acf_data[24:] - acf_data[:-24]
     acf_series = acf_data_seasonal
-    series_description = "Seasonally Adjusted"
-
-    acf_values = acf(acf_series, nlags=min(168, len(acf_series)//4), fft=True)  # Up to 1 week lag
+    series_description = "Seasonally Adjusted for daily seasonality"
+    acf_values = acf(acf_series, nlags=min(50, len(acf_series)//4), fft=True)
     
     plt.plot(range(len(acf_values)), acf_values, 'b-', alpha=0.8, linewidth=1.5)
     plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
@@ -184,61 +197,99 @@ def visualize_scattering_information(scattering, data, scattering_params, window
     plt.axhline(y=-confidence_interval, color='red', linestyle='--', alpha=0.5)
     
     plt.title(f'ACF - {series_description} Series', fontsize=14)
-    plt.xlabel('Lag (hours)')
-    plt.ylabel('Autocorrelation')
-    plt.legend()
+    plt.xlabel('Lag (hours)', fontsize=12)
+    plt.ylabel('Autocorrelation', fontsize=12)
+    plt.legend(fontsize=9)
     plt.grid(True, alpha=0.3)
     
-    # Superimposed 3 months from the middle of the period, in order to attempt 
-    # to show long-memory characteristic of the data
+    # Changing the month on month long memory graph to superimpose months more accurately
+    # by matching days of the week, as this is a strong pattern within my data 
+    # (differential energy consumption on weekends in comparison to the weekdays)
+    # Hence, the month length is much shorter to allow matching
 
     plt.subplot(5, 2, 4)
-    month_length = 24 * 30
-    
-    start_idx = len(data_flat) // 3
-    colors_months = plt.cm.Set1(np.linspace(0, 1, 3))
-    
-    for i in range(3):
-        month_start = start_idx + i * month_length
-        month_end = month_start + month_length
-        month_data = data_flat[month_start:month_end]
-        plt.plot(range(month_length), month_data, alpha=0.8, 
-                color=colors_months[i], label=f'Month {i+1}', linewidth=1.5)
-    
-    plt.title('Superimposed 3 Consecutive Months', fontsize=14)
-    plt.xlabel('Hours in Month')
-    plt.ylabel('Energy Load (kWh)')
-    plt.legend()
+
+    month_length = 24 * 25
+    colors_months = plt.cm.viridis(np.linspace(0, 1, 3))
+    month_names = ['June 2016', 'July 2016', 'August 2016']
+
+    target_weekday = 0
+    weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+    aligned_data = []
+    actual_start_dates = []
+    successful_months = []
+
+    print(f"Using month_length = {month_length} points ({month_length/24:.0f} days)")
+
+    for i, month_num in enumerate([6, 7, 8]):
+        month_mask = (complete_data.index.year == 2016) & (complete_data.index.month == month_num)
+        month_data_available = complete_data[month_mask]
+        
+        if len(month_data_available) == 0:
+            continue
+        
+        month_start = month_data_available.index[0]
+        current_weekday = month_start.weekday()
+        
+        if current_weekday <= target_weekday:
+            days_to_skip = target_weekday - current_weekday
+        else:
+            days_to_skip = 7 - (current_weekday - target_weekday)
+        
+        aligned_start = month_start + pd.Timedelta(days=days_to_skip)
+        
+        if aligned_start in month_data_available.index:
+            data_from_aligned = month_data_available.loc[aligned_start:]
+            if len(data_from_aligned) >= month_length:
+                month_data = data_from_aligned.iloc[:month_length].values.flatten()
+                actual_start_dates.append(aligned_start)
+                aligned_data.append(month_data)
+                successful_months.append(i)
+                
+                plt.plot(range(len(month_data)), month_data, alpha=0.8, 
+                        color=colors_months[i], 
+                        label=f'{month_names[i]} (from {aligned_start.strftime("%b %d")})', 
+                        linewidth=1.5)
+                
+                print(f"✓ {month_names[i]}: {len(month_data)} points from {aligned_start.strftime('%A, %B %d')}")
+
+    plt.title('Superimposed Summer Months from 2016', fontsize=12)
+    plt.xlabel('Hours from first Monday of the month', fontsize=12)
+    plt.ylabel('Energy load in kWh', fontsize=12)
+    plt.legend(loc='upper right', fontsize=9)
     plt.grid(True, alpha=0.3)
     
-    # Again, trying to show long dependence, this time with daily averaged-metered hourly load 
-    # across 3 consecutive years chosen at random (2012, 2013, 2014)
+    # Superimposed 3 consecutive years with hourly data (not daily averaged)
 
     plt.subplot(5, 2, 5)
     years_to_plot = [2012, 2013, 2014]
-    colors_years = plt.cm.Set1(np.linspace(0, 1, 3))
+    colors_years = plt.cm.plasma(np.linspace(0, 1, 5))
     
     for i, year in enumerate(years_to_plot):
-        year_start = pd.to_datetime(f'{year}-01-01')
-        year_end = pd.to_datetime(f'{year+1}-01-01')
-        year_mask = (data.index >= year_start) & (data.index < year_end)
-        year_data = data[year_mask].values.flatten()
-        daily_avg = [np.mean(year_data[j:j+24]) for j in range(0, len(year_data), 24)]
-        plt.plot(range(len(daily_avg)), daily_avg, alpha=0.8, 
-                color=colors_years[i], label=f'Year {year}', linewidth=1.5)
+        year_mask = complete_data.index.year == year
+        if year_mask.any():
+            year_data = complete_data[year_mask].values.flatten()
+            display_length = min(len(year_data), 8760)
+            if display_length > 0:
+                hour_range = range(display_length)
+                plt.plot(hour_range, year_data[:display_length], alpha=0.8, 
+                        color=colors_years[i], label=f'Year {year}', linewidth=1.0)
     
-    plt.title(f'Superimposed Years: 2012, 2013, 2014 (Daily Averages)', fontsize=14)
-    plt.xlabel('Days in Year')
-    plt.ylabel('Average Daily Energy Load (kWh)')
-    plt.legend()
+    plt.title(f'Superimposed Energy Load for 2012, 2013 and 2014', fontsize=14)
+    plt.xlabel('Hours within a Year', fontsize=12)
+    plt.ylabel('Energy Load (kWh)', fontsize=12)
+    plt.legend(loc='upper right')
     plt.grid(True, alpha=0.3)
     
     # Testing out the scattering transform on the first few "windows" of the training data
+    # To avoid any semblance of data leakage
+
     if sample_indices is None:
-        max_idx = len(data_values) - window_size
+        max_idx = len(train_data.values) - window_size
         sample_indices = np.linspace(0, max_idx, num_samples).astype(int)
     
-    print(f"Analyzing {len(sample_indices)} samples with window size {window_size}")
+    print(f"analyzing {len(sample_indices)} samples with a Window size of {window_size}")
     
     samples = []
     scattering_outputs = []
@@ -246,7 +297,7 @@ def visualize_scattering_information(scattering, data, scattering_params, window
     plt.subplot(5, 2, 6)
     
     for i, idx in enumerate(sample_indices):
-        sample = data_values[idx:idx + window_size].flatten()
+        sample = train_data.values[idx:idx + window_size].flatten()
         samples.append(sample)
         
         sample_norm = (sample - np.mean(sample)) / (np.std(sample) + 1e-8)
@@ -255,14 +306,15 @@ def visualize_scattering_information(scattering, data, scattering_params, window
         with torch.no_grad():
             scatter_output = scattering(sample_tensor)
             scattering_outputs.append(scatter_output.cpu().numpy())
-        
         if i < 5:
-            plt.plot(sample_norm, alpha=0.7, label=f'Sample {i+1}')
+            color = plt.cm.viridis(i / 4)
+            plt.plot(sample_norm, alpha=0.7, label=f'Sample {i+1}', color=color)
     
-    plt.title('Sample Windows for Scattering Analysis')
-    plt.xlabel('Time Points')
-    plt.ylabel('Normalized Values')
-    plt.legend()
+    plt.title('Sample Windows for scattering Analysis')
+    plt.xlabel('time points', fontsize=12)
+    
+    plt.ylabel('Normalized values', fontsize=12)
+    plt.legend(fontsize=9)
     plt.grid(True, alpha=0.3)
 
     # Showing daily seasonality for the first month (4 weeks) of data
@@ -272,7 +324,7 @@ def visualize_scattering_information(scattering, data, scattering_params, window
     seasonal_data = data_flat[:sample_size]
     
     days_to_show = min(7, len(seasonal_data) // 24)
-    colors_days = plt.cm.viridis(np.linspace(0, 1, days_to_show))
+    colors_days = plt.cm.inferno(np.linspace(0, 1, days_to_show))
     
     for day in range(days_to_show):
         day_start = day * 24
@@ -281,18 +333,20 @@ def visualize_scattering_information(scattering, data, scattering_params, window
         plt.plot(range(24), day_data, alpha=0.8, 
                 color=colors_days[day], label=f'Day {day+1}')
     
-    plt.title('Daily Patterns (First Week)', fontsize=12)
-    plt.xlabel('Hour of Day')
-    plt.ylabel('Energy Load (kWh)')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.title('Daily patterns- first week of the dataset)', fontsize=12)
+    plt.xlabel('Hour of the day', fontsize=12)
+    plt.ylabel('Energy Load in kWh', fontsize=12)
+    plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
     plt.grid(True, alpha=0.3)
     
     # Energy load distribution histogram
+    # This is just a simple histogram of the time series values, in order to observe any outliers/skewness etc etc
+
     plt.subplot(5, 2, 8)
     plt.hist(data_flat, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
     plt.title('Energy Load Distribution', fontsize=14)
-    plt.xlabel('Energy Load (kWh)')
-    plt.ylabel('Frequency')
+    plt.xlabel('Energy Load (kWh)', fontsize=12)
+    plt.ylabel('Frequency', fontsize=12)
     plt.grid(True, alpha=0.3)
     
     mean_val = np.mean(data_flat)
@@ -301,25 +355,30 @@ def visualize_scattering_information(scattering, data, scattering_params, window
     
     plt.axvline(mean_val, color='red', linestyle='--', alpha=0.8, label=f'Mean: {mean_val:.1f}')
     plt.axvline(median_val, color='green', linestyle='--', alpha=0.8, label=f'Median: {median_val:.1f}')
-    plt.legend()
+    plt.legend(fontsize=9)
     
-    # Now, starting a separate figure for the wavelet scattering analysis
+    plt.tight_layout(pad=3.0)
+    plt.subplots_adjust(hspace=0.35, wspace=0.25)
+    
+    # Now, starting a second, separate figure for a few wavelet scattering analysis graphs, 
+    # that will be important in order to explain/apply my proposed WST-LSTM method
 
     plt.figure(figsize=(16, 12))
     
-    # Taking one of the couple of scattering tranforms computed,
+    # Taking a couple of the scattering tranforms computed for the sample windows graph above,
     # and averaging the magnitudes of the generated coefficients
 
     scattering_array = np.array([s.flatten() for s in scattering_outputs])
     avg_magnitudes = np.mean(np.abs(scattering_array), axis=0)
     
     # Just plotting the avg magnitude of each coefficient
+
     plt.subplot(2, 2, 1)
     plt.plot(np.arange(len(avg_magnitudes)), avg_magnitudes, 'o-', alpha=0.7)
     plt.yscale('log')
-    plt.title('Scattering Coefficient Magnitude (Log Scale)', fontsize=14)
-    plt.xlabel('Coefficient Index')
-    plt.ylabel('Average Magnitude')
+    plt.title('Scattering Coefficient Magnitude, on a Log Scale', fontsize=14)
+    plt.xlabel('coefficient index', fontsize=12)
+    plt.ylabel('average magnitude', fontsize=12)
     plt.grid(True, alpha=0.3)
     
     # Cumulative energy is calculated by the formula below, 
@@ -334,6 +393,7 @@ def visualize_scattering_information(scattering, data, scattering_params, window
     plt.axhline(y=0.99, color='gray', linestyle='--', alpha=0.8)
     
     # Finding indices where we capture 90% and 99% of energy, 
+    
     # (useful for computational efficiency)
 
     idx_90 = np.argmax(cumulative_energy >= 0.9)
@@ -345,36 +405,44 @@ def visualize_scattering_information(scattering, data, scattering_params, window
                 label=f'99% Energy: {idx_99} coeffs ({idx_99/len(cumulative_energy):.1%})')
     
     plt.title('Cumulative Energy Distribution', fontsize=14)
-    plt.xlabel('Number of Coefficients')
-    plt.ylabel('Cumulative Energy Ratio')
+    plt.xlabel('Number of Coefficients', fontsize=12)
+    plt.ylabel('Cumulative energy ratio', fontsize=12)
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # Data frequency analysis - showing scattering response to different time periods/periodicities
-    # NEEDS FIXING, COME BACK TO IT
+    # Temporal stability analysis at specific time intervals
+    # Essentially assessing the translation invariance of the WST representation,
+    # beyond its averaging (invariance) scale
+    # For example, for a window of 128 hours, the coefficients should be constant for a 24 hour shift
+    # but not for a 2 month shift
+    # (limiting the analysis to the first 100 coefficients for clarity)
 
-    plt.subplot(2, 2, 3)
+    plt.subplot(2, 1, 2)
     
-    time_periods = ['Start of Dataset (t=0)', 'One Day Later (t+24h)', 'One Week Later (t+168h)', 'Two Weeks Later (t+336h)', 'End of Dataset (t=final)', 'Middle of Dataset (t=50%)']
-    period_responses = []
+    train_values = train_data.values.flatten()
     
-    daily_pattern = 24
-    weekly_pattern = 24 * 7
-    
-    # Looking at 6 different segments of the data, with various offsets from each other
-    segments = [
-        data_values[0:window_size].flatten(),
-        data_values[daily_pattern:daily_pattern+window_size].flatten(),
-        data_values[weekly_pattern:weekly_pattern+window_size].flatten(),
-        data_values[2*weekly_pattern:2*weekly_pattern+window_size].flatten(),
-        data_values[-window_size:].flatten(),
-        data_values[len(data_values)//2:len(data_values)//2+window_size].flatten()
+    time_intervals = [
+        (0, "Start (t=0)"),
+        (24, "1 Day Later (t+24h)"),
+        (168, "1 Week Later (t+168h)"),
+        (336, "2 Weeks Later (t+336h)"),
+        (720, "1 Month Later (t+720h)"),
+        (1440, "2 Months Later (t+1440h)"),
+        (4320, "6 Months Later (t+4320h)"),
+        (8760, "1 Year Later (t+8760h)"),
+        (17520, "2 Years Later (t+17520h)")
     ]
     
-    # Finding the response energies, which are just squares of the magnitudes of the scattering coefficients
-    # See Mallat (2012) or Bolliet (2024) within my paper
-
-    for i, segment in enumerate(segments):
+    temporal_responses = []
+    valid_labels = []
+    
+    print(f"Analyzing temporal stability with {len(train_values)} training points...")
+    
+    for time_offset, label in time_intervals:
+        start_idx = time_offset
+        end_idx = start_idx + window_size
+        
+        segment = train_values[start_idx:end_idx]
         segment_norm = (segment - np.mean(segment)) / (np.std(segment) + 1e-8)
         
         segment_tensor = torch.tensor(segment_norm.reshape(1, 1, -1), dtype=torch.float32).to(device)
@@ -382,116 +450,24 @@ def visualize_scattering_information(scattering, data, scattering_params, window
             segment_scatter = scattering(segment_tensor)
         
         response_energy = np.abs(segment_scatter.cpu().numpy().flatten())**2
-        period_responses.append(response_energy)
+        temporal_responses.append(response_energy)
+        valid_labels.append(label)
     
-    # Plotting logged versions as a heatmap (logged because it makes it look nicer)
-    resp_array = np.array(period_responses)
-    log_resp_array = np.log(resp_array + 1e-10)
+    temporal_array = np.array(temporal_responses)
+    log_temporal_array = np.log(temporal_array[:, :100] + 1e-10)
     
-    plt.imshow(log_resp_array[:, :100], aspect='auto', interpolation='nearest')
-    plt.colorbar(label='Log Response Energy')
-    plt.title('Scattering Response to Real Data Patterns', fontsize=14)
-    plt.xlabel('Coefficient Index (first 100)')
-    plt.ylabel('Data Segment Type')
-    actual_labels = time_periods[:len(period_responses)]
-    plt.yticks(np.arange(len(actual_labels)), actual_labels)
+    im = plt.imshow(log_temporal_array, aspect='auto', interpolation='nearest', cmap='viridis')
+    plt.colorbar(im, label='Log Response Energy')
+    plt.title('WST Temporal Stability Analysis', fontsize=14)
+    plt.xlabel('Coefficient Index (first 100)', fontsize=12)
+    plt.ylabel('Time Offset from start of the dataset', fontsize=12)
+    plt.yticks(np.arange(len(valid_labels)), valid_labels, fontsize=10)
+    plt.text(102, len(valid_labels)/2, 
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
+            fontsize=9, verticalalignment='center')
     
-    # Temporal analysis - scattering response to patterns at different times
-    # (trying to show stability of scatteirng coefficients over time/translation invariance!)
-
-    plt.subplot(2, 2, 4)
-    
-    positions = [0, len(data_values)//4, len(data_values)//2, 3*len(data_values)//4, len(data_values)-window_size]
-    position_labels = ['Start', 'Quarter', 'Middle', '3/4', 'End']
-    
-    position_responses = []
-    
-    for pos, label in zip(positions, position_labels):
-        real_segment = data_values[pos:pos + window_size].flatten()
-        
-        segment_norm = (real_segment - np.mean(real_segment)) / (np.std(real_segment) + 1e-8)
-        
-        segment_tensor = torch.tensor(segment_norm.reshape(1, 1, -1), dtype=torch.float32).to(device)
-        with torch.no_grad():
-            segment_scatter = scattering(segment_tensor)
-        
-        response = np.abs(segment_scatter.cpu().numpy().flatten())
-        position_responses.append(response)
-    
-    pos_array = np.array(position_responses)
-    plt.imshow(pos_array[:, :100], aspect='auto', interpolation='nearest')
-    plt.colorbar(label='Response Magnitude')
-    plt.title('Scattering Consistency Across Time Periods', fontsize=14)
-    plt.xlabel('Coefficient Index (first 100)')
-    plt.ylabel('Time Period in Dataset')
-    plt.yticks(np.arange(len(position_labels)), position_labels)
-    
-    plt.tight_layout()
-    plt.savefig('scattering_information_analysis.png', dpi=300)
-    plt.show()
-    
-    # Data time scales visualization
-
-    J = scattering_params['J']
-    Q = scattering_params['Q']
-    
-    plt.figure(figsize=(14, 10))
-    
-    scale_segments = []
-    scale_names = []
-    
-    hourly_scale = 24
-    weekly_scale = 24 * 7 
-    monthly_scale = 24 * 30
-    
-    time_scales = [
-        (hourly_scale, "Daily Pattern (24h)"),
-        (weekly_scale, "Weekly Pattern (168h)"),
-        (monthly_scale, "Monthly Pattern (720h)"),
-    ]
-    
-    # sourced from different parts of the dataset
-
-    for i, (scale, name) in enumerate(time_scales):
-        start_idx = i * scale
-        segment = data_values[start_idx:start_idx + window_size].flatten()
-        scale_segments.append(segment)
-        scale_names.append(name)
-    
-    # Adding additional segments from different seasons/periods
-
-    additional_segments = [
-        ("Early Period", data_values[:window_size].flatten()),
-        ("Mid Period", data_values[len(data_values)//2:len(data_values)//2+window_size].flatten()),
-        ("Late Period", data_values[-window_size:].flatten()),
-    ]
-    
-    for name, segment in additional_segments:
-        scale_segments.append(segment)
-        scale_names.append(name)
-    
-    # Plot the real data segments showing different time scales,
-    # for a data length of a week
-
-    num_plots = len(scale_segments)
-    
-    for i in range(num_plots):
-        plt.subplot(num_plots, 1, i+1)
-        segment = scale_segments[i]
-        name = scale_names[i]
-        
-        display_length = min(len(segment), 168)
-        plt.plot(range(display_length), segment[:display_length])
-            
-        plt.title(f"{name} - Real Energy Data")
-        plt.ylabel("Energy (kWh)")
-        plt.grid(True, alpha=0.3)
-        
-        if i == num_plots - 1:
-            plt.xlabel("Time (hours)")
-    
-    plt.tight_layout()
-    plt.savefig('time_scales_visualization.png', dpi=300)
+    plt.tight_layout(pad=2.0)
+    plt.savefig('scattering_information_analysis.png', dpi=300, bbox_inches='tight')
     plt.show()
     
     # Information compression analysis
@@ -514,7 +490,7 @@ def visualize_scattering_information(scattering, data, scattering_params, window
         'percent_coefficients_99': idx_99 / len(avg_magnitudes) * 100
     }
     
-    print("\n===== Scattering Information Analysis =====")
+    print("\n~~~ Scattering info analysis ~~~~")
     print(f"Original signal dimension: {window_size}")
     print(f"Number of scattering coefficients: {len(avg_magnitudes)}")
     print(f"Raw compression ratio: {compression_ratio:.2f}x")
@@ -527,7 +503,8 @@ def visualize_scattering_information(scattering, data, scattering_params, window
         'average_magnitudes': avg_magnitudes,
         'cumulative_energy': cumulative_energy,
         'compression_results': compression_results,
-        'position_responses': position_responses,
+        'temporal_responses': temporal_responses if 'temporal_responses' in locals() else [],
+        'temporal_labels': valid_labels if 'valid_labels' in locals() else [],
         'idx_90': idx_90,
         'idx_99': idx_99
     }

@@ -336,16 +336,16 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
     forecast_steps = 772
     NUMBER_OF_TRIALS_RANDOM_SEARCH = 7
     set_random_seeds(GLOBAL_SEED)
-    
-    # Fitting the scaler only on the training data, for now
-    scaler = MinMaxScaler()
-    train_data_scaled = scaler.fit_transform(train_data)
-    
+
     # Dataset here is almost 200k data points, so just to speed up training have limited it to 30k
     # Final thing will use more
     if len(train_data) > 50000:
         print(f"Training on last 8000 points of {len(train_data)} total points")
-        train_data_scaled = train_data_scaled[-30000:]
+        train_data = train_data[-30000:]
+    
+    # Fitting the scaler only on the training data, for now
+    scaler = MinMaxScaler()
+    train_data_scaled = scaler.fit_transform(train_data)
 
     # Initializing the wavelet scattering transform, outside of the training loop
     J = min(int(np.log2(window_size)), 8)
@@ -370,12 +370,13 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
     # Hence why I have called the function here and not in the main execution script
 
     analysis_results = visualize_scattering_information(
-        scattering=scattering,
-        data=train_data,
-        scattering_params=scattering_params,
-        window_size=window_size,
-        num_samples=5
-    )
+    scattering=scattering,
+    train_data=train_data,
+    test_data=test_data,
+    scattering_params=scattering_params,
+    window_size=window_size,
+    num_samples=5
+)
     
     # Extraccting my high energy coefficients (to not overparameterize the model),
     # to the specified threshold (hyperparameter in main executionn script)
