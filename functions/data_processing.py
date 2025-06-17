@@ -531,3 +531,234 @@ def visualize_scattering_information(scattering, data, scattering_params, window
         'idx_90': idx_90,
         'idx_99': idx_99
     }
+
+def extract_scattering_filters(scattering_transform, scale, signal_length=None):
+    """
+    Simplified version: Extract filter tensors from Kymatio scattering transform, & graph
+    """
+    
+    if signal_length is None:
+        signal_length = scattering_transform.T
+    
+    J = scattering_transform.J
+    Q = scattering_transform.Q
+    T = signal_length
+    
+    if isinstance(Q, tuple):
+        Q1, Q2 = Q[0], Q[1] if len(Q) > 1 else 1
+    else:
+        Q1 = Q
+        Q2 = 1
+    
+    print(f"Filter Analysis: J={J}, Q=({Q1},{Q2}), T={T}, Scale={scale}")
+    
+    # The loop below just essentially converts any tensors created by the Wavelet Scattering Transform Kymatio package
+    # It does this for tensors of a certain size- the window size (T) multiplied by the scaling parameter,
+    # As Kymation outputs tensors of different sizes for different j scales
+    
+    real_filters = []
+    tensor_names = []
+    
+    for attr_name in dir(scattering_transform):
+        if attr_name.startswith('tensor') and attr_name[6:].isdigit():
+            try:
+                tensor = getattr(scattering_transform, attr_name)
+                
+                if hasattr(tensor, 'shape') and hasattr(tensor, 'detach'):
+                    tensor_np = tensor.detach().cpu().numpy()
+                    
+                    if tensor_np.ndim > 1:
+                        tensor_flat = tensor_np.flatten()
+                    else:
+                        tensor_flat = tensor_np
+                    
+                    if len(tensor_flat) == T * scale:
+                        real_filters.append(tensor_flat)
+                        tensor_names.append(attr_name)
+                        
+            except Exception:
+                continue
+    
+    if len(real_filters) == 0:
+        print("no filter tensors found.")
+        return None
+    
+    print(f"Extracted {len(real_filters)} filter tensors")
+    
+    # Determining filter length for consistent plotting
+    # Creating a frequency axis using the fast fourier transform (FFT) based on ze actual filter length
+
+    actual_filter_length = len(real_filters[0]) if real_filters else T
+
+    freqs = np.fft.fftfreq(actual_filter_length, d=1.0)
+    freqs_pos = freqs[:actual_filter_length//2]
+    
+    # Looping through the filters to extract the mathematical properties for each one
+    # (so, the center frequency xi, the bandwidth sigma and the scale, j)
+    # And then storing these in a list
+    
+    psi1_f = scattering_transform.psi1_f
+    filter_metadata = []
+    
+    for i, filter_dict in enumerate(psi1_f):
+        if isinstance(filter_dict, dict):
+            xi = filter_dict.get('xi', 0.0)
+            sigma = filter_dict.get('sigma', 0.0)
+            j = filter_dict.get('j', 0)
+            
+            filter_metadata.append({
+                'index': i,
+                'xi': xi,
+                'sigma': sigma, 
+                'j': j,
+                'center_freq': xi
+            })
+    
+    # And here come the graphs.
+    
+    plt.figure(figsize=(16, 12))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(real_filters)))
+    
+    matched_metadata = []
+    for i in range(len(real_filters)):
+        if i < len(filter_metadata):
+            matched_metadata.append(filter_metadata[i])
+        else:
+            matched_metadata.append({'index': i, 'xi': 0.0, 'sigma': 0.0, 'j': 0})
+    
+    # 1) Filter bank visualisation- frequencey responses for eahc filter
+    plt.subplot(2, 2, 1)
+    center_frequencies = []
+    
+    for i, (filter_data, meta, color) in enumerate(zip(real_filters, matched_metadata, colors)):
+        filter_magnitude = np.abs(filter_data)
+        filter_pos = filter_magnitude[:len(freqs_pos)]
+        
+        if meta['xi'] > 0:
+            label = f"ψ[{i}] (j={meta['j']}, ξ={meta['xi']:.3f})"
+            center_frequencies.append(meta['xi'])
+        else:
+            if np.max(filter_pos) > 0:
+                center_idx = np.argmax(filter_pos)
+                center_freq = freqs_pos[center_idx]
+                center_frequencies.append(center_freq)
+                label = f"ψ[{i}] (f₀={center_freq:.3f})"
+            else:
+                center_frequencies.append(0.0)
+                label = f"ψ[{i}]"
+        
+        plt.plot(freqs_pos, filter_pos, color=color, alpha=0.8, linewidth=1.5, 
+                label=label if i < 8 else "")
+    
+    plt.title(f'Filter Bank - {len(real_filters)} Filters (Tensor Length={int(scale*T)})', fontsize=14)
+    plt.xlabel('Frequency')
+    plt.ylabel('|Filter(ω)|')
+    plt.grid(True, alpha=0.3)
+    if len(real_filters) <= 8:
+        plt.legend(fontsize=8)
+    plt.xlim(0, 0.5)
+    
+    # 2) Visualising each wavelet in the time domain 
+    # (les code below first converts it fro the the frequency domain using the inverse fast fourier transform)
+
+    plt.subplot(2, 2, 2)
+    time_axis = np.arange(actual_filter_length)
+    
+    for i, (filter_data, color) in enumerate(zip(real_filters[:6], colors)):
+        filter_time = np.fft.ifft(filter_data)
+        filter_real = np.real(filter_time)
+        filter_centered = np.fft.ifftshift(filter_real)
+        
+        min_length = min(len(time_axis), len(filter_centered))
+        time_axis_plot = time_axis[:min_length]
+        filter_centered_plot = filter_centered[:min_length]
+        
+        plt.plot(time_axis_plot, filter_centered_plot, color=color, alpha=0.8, 
+                linewidth=1.5, label=f'ψ[{i}] (j={matched_metadata[i]["j"]})')
+    
+    plt.title(f'Wavelets - Time Domain (Tensor Length={int(scale * T)})', fontsize=14)
+    plt.xlabel('Time')
+    plt.ylabel('ψ(t)')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # 3) FRequency converage... hopefully fairly self explanatory...
+    # Coverage energy is based on the square of the filter magnitudes, per wavelet theory
+    plt.subplot(2, 2, 3)
+    
+    total_coverage = np.zeros(len(freqs_pos))
+    for filter_data in real_filters:
+        filter_magnitude = np.abs(filter_data)
+        filter_pos = filter_magnitude[:len(freqs_pos)]
+        total_coverage += filter_pos**2
+    
+    plt.plot(freqs_pos, total_coverage, 'r-', linewidth=2, label='Total Coverage')
+    plt.fill_between(freqs_pos, total_coverage, alpha=0.3, color='red')
+    plt.xlabel('Frequency')
+    plt.ylabel('Coverage Energy')
+    plt.title(f'Frequency Coverage (Scale={int(scale * T)})')
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 0.5)
+    
+    # 4) Frequency vs Bandwidth scatter plot
+    # Bandwidth is calculated as the difference between the frequencies at half maximum
+
+    plt.subplot(2, 2, 4)
+    
+    bandwidths = []
+    for i, filter_data in enumerate(real_filters):
+        filter_magnitude = np.abs(filter_data)
+        filter_pos = filter_magnitude[:len(freqs_pos)]
+        
+        max_val = np.max(filter_pos)
+        if max_val > 0:
+            half_max_indices = np.where(filter_pos >= max_val/2)[0]
+            if len(half_max_indices) > 1:
+                bandwidth = freqs_pos[half_max_indices[-1]] - freqs_pos[half_max_indices[0]]
+            else:
+                bandwidth = matched_metadata[i]['sigma'] if matched_metadata[i]['sigma'] > 0 else 0.01
+        else:
+            bandwidth = 0.01
+        bandwidths.append(bandwidth)
+    
+    plt.scatter(center_frequencies, bandwidths, c=[meta['j'] for meta in matched_metadata], 
+               cmap='viridis', s=80, alpha=0.8)
+    plt.colorbar(label='Scale j')
+    plt.xlabel('Center Frequency')
+    plt.ylabel('Bandwidth')
+    plt.title(f'Frequency vs Bandwidth by Scale (Tensor length={int(scale * T)})')
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Printing off the results of what filters were actually extracted
+    # in the first part of the function for this tensor length
+    
+    scales = [meta['j'] for meta in matched_metadata]
+    
+    print(f"\nFilter Summary (Scale={scale}):")
+    print(f"{'Index':<5} {'Scale j':<7} {'Center f':<10} {'Bandwidth':<10}")
+    print("-" * 40)
+    
+    for i, (meta, actual_freq, bandwidth) in enumerate(zip(matched_metadata, center_frequencies, bandwidths)):
+        print(f"{i:<5} {meta['j']:<7} {actual_freq:<10.4f} {bandwidth:<10.4f}")
+    
+    print(f"\nScale Distribution:")
+    for scale_j in sorted(set(scales)):
+        scale_filters = [i for i, s in enumerate(scales) if s == scale_j]
+        scale_freq_range = [center_frequencies[i] for i in scale_filters]
+        if scale_freq_range:
+            print(f"  Scale j={scale_j}: {len(scale_filters)} filters, freq range: {min(scale_freq_range):.4f} - {max(scale_freq_range):.4f}")
+    
+    return {
+        'real_filters': real_filters,
+        'tensor_names': tensor_names,
+        'filter_metadata': matched_metadata,
+        'center_frequencies': center_frequencies,
+        'bandwidths': bandwidths,
+        'scales': scales,
+        'total_extracted': len(real_filters),
+        'scale_parameter': scale,
+        'actual_filter_length': actual_filter_length
+    }

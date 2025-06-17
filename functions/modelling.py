@@ -14,7 +14,7 @@ import itertools
 import random
 from sklearn.model_selection import TimeSeriesSplit
 
-from functions.data_processing import TimeSeriesDataset, visualize_scattering_information
+from functions.data_processing import TimeSeriesDataset, visualize_scattering_information, extract_scattering_filters
 from functions.evaluation import analyze_model_weights
 
 def set_random_seeds(seed_value=42):
@@ -357,6 +357,12 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     scattering.to(device)
+
+    #Examining the scattering wavelets and filter banks at different tensor sizes (scales)
+
+    filter_analysis = extract_scattering_filters(scattering, 1, window_size)
+    filter_analysis = extract_scattering_filters(scattering, 2, window_size)
+    filter_analysis = extract_scattering_filters(scattering, 0.5, window_size)
 
     # (moved classes out of the forecasting function for better code clarity/easier to fiddle with them)
     
