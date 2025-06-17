@@ -23,7 +23,8 @@ class TimeSeriesDataset(Dataset):
     """
     def __init__(self, data, forecast_horizon, mode='dual', 
                  window_size=None, time_lags=30, scattering_transform=None, 
-                 step=1, energy_threshold=0.9, high_energy_indices=None):
+                 step=1, energy_threshold=0.9, high_energy_indices=None,
+                 precomputed_scattering=None):
         """
         Initialize the unified dataset
         
@@ -38,10 +39,11 @@ class TimeSeriesDataset(Dataset):
         self.energy_threshold = energy_threshold
         self.high_energy_indices = high_energy_indices
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.precomputed_scattering = precomputed_scattering
         
         if mode in ['dual', 'scattering_only']:
-            if window_size is None or scattering_transform is None:
-                raise ValueError(f"window_size and scattering_transform required for mode '{mode}'")
+            if window_size is None or (scattering_transform is None and precomputed_scattering is None):
+                raise ValueError(f"window_size and (scattering_transform or precomputed_scattering) required for mode '{mode}'")
         
         if mode in ['dual', 'raw_only']:
             if time_lags is None:
@@ -78,20 +80,23 @@ class TimeSeriesDataset(Dataset):
         target_tensor = torch.tensor(target, dtype=torch.float32)
         
         if self.mode in ['dual', 'scattering_only']:
-            scatter_window = self.data[start_idx:start_idx + self.window_size].flatten()
-            scatter_window_tensor = torch.tensor(scatter_window, dtype=torch.float32)
-            
-            with torch.no_grad():
-                scattering_input = scatter_window_tensor.unsqueeze(0).unsqueeze(0)
-                scattering_coeffs = self.scattering(scattering_input)
+            if self.precomputed_scattering is not None and start_idx in self.precomputed_scattering:
+                scattering_coeffs = self.precomputed_scattering[start_idx].to(self.device)
+            else:
+                scatter_window = self.data[start_idx:start_idx + self.window_size].flatten()
+                scatter_window_tensor = torch.tensor(scatter_window, dtype=torch.float32)
                 
-                if self.high_energy_indices is not None:
-                    indices_tensor = torch.tensor(self.high_energy_indices, dtype=torch.long, device=self.device)
-                    flat_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[0], scattering_coeffs.shape[2]).contiguous()
-                    filtered_coeffs = torch.index_select(flat_coeffs, 1, indices_tensor)
-                    scattering_coeffs = filtered_coeffs.reshape(filtered_coeffs.shape[1], 1)
-                else:
-                    scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[2], 1)
+                with torch.no_grad():
+                    scattering_input = scatter_window_tensor.unsqueeze(0).unsqueeze(0)
+                    scattering_coeffs = self.scattering(scattering_input)
+                    
+                    if self.high_energy_indices is not None:
+                        indices_tensor = torch.tensor(self.high_energy_indices, dtype=torch.long, device=self.device)
+                        flat_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[0], scattering_coeffs.shape[2]).contiguous()
+                        filtered_coeffs = torch.index_select(flat_coeffs, 1, indices_tensor)
+                        scattering_coeffs = filtered_coeffs.reshape(filtered_coeffs.shape[1], 1)
+                    else:
+                        scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[2], 1)
         
         if self.mode in ['dual', 'raw_only']:
             if self.mode == 'dual':
@@ -111,6 +116,51 @@ class TimeSeriesDataset(Dataset):
             return lag_window_tensor, target_tensor
         elif self.mode == 'scattering_only':
             return scattering_coeffs, target_tensor
+
+def precompute_scattering_coefficients(data, window_size, scattering_transform, step=1, high_energy_indices=None):
+    """
+    Simple function that pre-computes the scattering coefficients for each and every windows in the dataset
+    (Hugely impactful in terms of memory and processing time)
+   
+    """
+
+    try:
+        device = next(scattering_transform.parameters()).device
+        print(f"Using device: {device}")
+    except (StopIteration, AttributeError):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using default device: {device}")
+        scattering_transform = scattering_transform.to(device)
+    
+    scattering_coeffs_dict = {}
+    
+    indices = list(range(0, len(data) - window_size + 1, step))
+    
+    print(f"...pre-computing scattering coefficients for {len(indices)} windows...")
+    
+    for i, start_idx in enumerate(indices):
+        window = data[start_idx:start_idx + window_size].flatten()
+        window_tensor = torch.tensor(window, dtype=torch.float32).to(device)
+        
+        with torch.no_grad():
+            scattering_input = window_tensor.unsqueeze(0).unsqueeze(0)
+            scattering_coeffs = scattering_transform(scattering_input)
+            
+            if high_energy_indices is not None:
+                indices_tensor = torch.tensor(high_energy_indices, dtype=torch.long, device=device)
+                flat_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[0], scattering_coeffs.shape[2]).contiguous()
+                filtered_coeffs = torch.index_select(flat_coeffs, 1, indices_tensor)
+                scattering_coeffs = filtered_coeffs.reshape(filtered_coeffs.shape[1], 1)
+            else:
+                scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[2], 1)
+            
+            scattering_coeffs_dict[start_idx] = scattering_coeffs.cpu()
+        
+        if (i + 1) % 100 == 0:
+            print(f"  Computed {i + 1}/{len(indices)} windows")
+    
+    print(f"pre-computation complete. Stored {len(scattering_coeffs_dict)} coefficient sets.")
+    return scattering_coeffs_dict
 
 def visualize_scattering_information(scattering, train_data, test_data, scattering_params, window_size, sample_indices=None, num_samples=5):
     """
@@ -252,7 +302,7 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
                         label=f'{month_names[i]} (from {aligned_start.strftime("%b %d")})', 
                         linewidth=1.5)
                 
-                print(f"✓ {month_names[i]}: {len(month_data)} points from {aligned_start.strftime('%A, %B %d')}")
+                print(f"{month_names[i]}: {len(month_data)} points from {aligned_start.strftime('%A, %B %d')}")
 
     plt.title('Superimposed Summer Months from 2016', fontsize=12)
     plt.xlabel('Hours from first Monday of the month', fontsize=12)
@@ -462,10 +512,6 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
     plt.xlabel('Coefficient Index (first 100)', fontsize=12)
     plt.ylabel('Time Offset from start of the dataset', fontsize=12)
     plt.yticks(np.arange(len(valid_labels)), valid_labels, fontsize=10)
-    plt.text(102, len(valid_labels)/2, 
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
-            fontsize=9, verticalalignment='center')
-    
     plt.tight_layout(pad=2.0)
     plt.savefig('scattering_information_analysis.png', dpi=300, bbox_inches='tight')
     plt.show()
