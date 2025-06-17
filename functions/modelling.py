@@ -14,7 +14,7 @@ import itertools
 import random
 from sklearn.model_selection import TimeSeriesSplit
 
-from functions.data_processing import TimeSeriesDataset, visualize_scattering_information, extract_scattering_filters
+from functions.data_processing import TimeSeriesDataset, visualize_scattering_information, extract_scattering_filters, precompute_scattering_coefficients
 from functions.evaluation import analyze_model_weights
 
 def set_random_seeds(seed_value=42):
@@ -333,12 +333,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
 
     Modified to implement time series cross validation and random starting points within the data for evaluation
     """
-    
-    GLOBAL_SEED = 42
-    FORECAST_STEPS = 772
-    forecast_steps = 772
-    NUMBER_OF_TRIALS_RANDOM_SEARCH = 7
-    set_random_seeds(GLOBAL_SEED)
 
     # Dataset here is almost 200k data points, so just to speed up training have limited it to 8k
     # Final thing will use more
