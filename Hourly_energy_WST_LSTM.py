@@ -44,6 +44,7 @@ if __name__ == "__main__":
     CV_SPLITS= 5
     NUM_RANDOM_STARTS= 20
     BATCH_SIZE = 32
+    SCATTERING_SEQUENCE_LENGTH = 6
     
     scattering_params = {
         'J': int(np.log2(WINDOW_SIZE)),
@@ -72,7 +73,8 @@ if __name__ == "__main__":
         train_data, test_data, WINDOW_SIZE, FORECAST_HORIZON, scattering_params, lstm_params_grid, 
         time_lags=TIME_LAGS, random_seed=GLOBAL_SEED, step_size=STEP_SIZE, energy_threshold=ENERGY_THRESHOLD,
         multi_step=MULTI_STEP_FORECAST, forecast_steps=FORECAST_STEPS, n_splits=CV_SPLITS, 
-        num_random_starts=NUM_RANDOM_STARTS, random_search_trials=NUMBER_OF_TRIALS_RANDOM_SEARCH, batch_size=BATCH_SIZE
+        num_random_starts=NUM_RANDOM_STARTS, random_search_trials=NUMBER_OF_TRIALS_RANDOM_SEARCH, batch_size=BATCH_SIZE,
+        scattering_sequence_length=SCATTERING_SEQUENCE_LENGTH
     )
 
     end_time = time.time()
@@ -263,13 +265,13 @@ if __name__ == "__main__":
                 pure_lstm_errors.append(np.mean(np.abs(actual_h - all_pure_lstm_sequences[i][:h])))
                 sarima_errors.append(np.mean(np.abs(actual_h - all_sarima_sequences[i][:h])))
         
-        avg_errors['LSTM+WST'].append(np.mean(lstm_scattering_errors))
+        avg_errors['LSTM+Wavelet'].append(np.mean(lstm_scattering_errors))
         avg_errors['Scattering-Only'].append(np.mean(scattering_only_errors))
         avg_errors['Pure LSTM'].append(np.mean(pure_lstm_errors))
         avg_errors['SARIMA'].append(np.mean(sarima_errors))
 
     plt.subplot(1, 2, 1)
-    plt.plot(horizons, avg_errors['LSTM+WST'], 'ro-', linewidth=2, markersize=6, label='LSTM+Wavelet')
+    plt.plot(horizons, avg_errors['LSTM+Wavelet'], 'ro-', linewidth=2, markersize=6, label='LSTM+Wavelet')
     plt.plot(horizons, avg_errors['Scattering-Only'], 'o-', color='orange', linewidth=2, markersize=6, label='Scattering-Only')
     plt.plot(horizons, avg_errors['Pure LSTM'], 'mo-', linewidth=2, markersize=6, label='Pure LSTM')
     plt.plot(horizons, avg_errors['SARIMA'], 'go-', linewidth=2, markersize=6, label='SARIMA')

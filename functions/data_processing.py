@@ -24,7 +24,7 @@ class TimeSeriesDataset(Dataset):
     def __init__(self, data, forecast_horizon, mode='dual', 
                  window_size=None, time_lags=30, scattering_transform=None, 
                  step=1, energy_threshold=0.9, high_energy_indices=None,
-                 precomputed_scattering=None):
+                 precomputed_scattering=None, scattering_sequence_length=4):
         """
         Initialize the unified dataset
         
@@ -40,6 +40,7 @@ class TimeSeriesDataset(Dataset):
         self.high_energy_indices = high_energy_indices
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.precomputed_scattering = precomputed_scattering
+        self.scattering_sequence_length = scattering_sequence_length
         
         if mode in ['dual', 'scattering_only']:
             if window_size is None or (scattering_transform is None and precomputed_scattering is None):
@@ -50,11 +51,11 @@ class TimeSeriesDataset(Dataset):
                 raise ValueError(f"time_lags required for mode '{mode}'")
         
         if mode == 'dual':
-            max_lookback = max(window_size, time_lags)
+            max_lookback = window_size * scattering_sequence_length
         elif mode == 'raw_only':
             max_lookback = time_lags
         elif mode == 'scattering_only':
-            max_lookback = window_size
+            max_lookback = window_size * scattering_sequence_length
         else:
             raise ValueError(f"Invalid mode: {mode}. Must be 'dual', 'raw_only', or 'scattering_only'")
         
@@ -70,38 +71,47 @@ class TimeSeriesDataset(Dataset):
         lag_window_tensor = None
         
         if self.mode == 'dual':
-            target_start = start_idx + self.window_size
+            target_start = start_idx + self.window_size * self.scattering_sequence_length
         elif self.mode == 'raw_only':
             target_start = start_idx + self.time_lags
         elif self.mode == 'scattering_only':
-            target_start = start_idx + self.window_size
+            target_start = start_idx + self.window_size * self.scattering_sequence_length
             
         target = self.data[target_start:target_start + self.forecast_horizon].flatten()
         target_tensor = torch.tensor(target, dtype=torch.float32)
         
         if self.mode in ['dual', 'scattering_only']:
-            if self.precomputed_scattering is not None and start_idx in self.precomputed_scattering:
-                scattering_coeffs = self.precomputed_scattering[start_idx].to(self.device)
-            else:
-                scatter_window = self.data[start_idx:start_idx + self.window_size].flatten()
-                scatter_window_tensor = torch.tensor(scatter_window, dtype=torch.float32)
+            scattering_sequence = []
+            
+            for seq_idx in range(self.scattering_sequence_length):
+                window_start = start_idx + seq_idx * self.window_size
                 
-                with torch.no_grad():
-                    scattering_input = scatter_window_tensor.unsqueeze(0).unsqueeze(0)
-                    scattering_coeffs = self.scattering(scattering_input)
+                if self.precomputed_scattering is not None and window_start in self.precomputed_scattering:
+                    coeffs = self.precomputed_scattering[window_start].to(self.device)
+                else:
+                    scatter_window = self.data[window_start:window_start + self.window_size].flatten()
+                    scatter_window_tensor = torch.tensor(scatter_window, dtype=torch.float32)
                     
-                    if self.high_energy_indices is not None:
-                        indices_tensor = torch.tensor(self.high_energy_indices, dtype=torch.long, device=self.device)
-                        flat_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[0], scattering_coeffs.shape[2]).contiguous()
-                        filtered_coeffs = torch.index_select(flat_coeffs, 1, indices_tensor)
-                        scattering_coeffs = filtered_coeffs.reshape(filtered_coeffs.shape[1], 1)
-                    else:
-                        scattering_coeffs = scattering_coeffs.reshape(scattering_coeffs.shape[2], 1)
+                    with torch.no_grad():
+                        scattering_input = scatter_window_tensor.unsqueeze(0).unsqueeze(0)
+                        coeffs = self.scattering(scattering_input)
+                        
+                        if self.high_energy_indices is not None:
+                            indices_tensor = torch.tensor(self.high_energy_indices, dtype=torch.long, device=self.device)
+                            flat_coeffs = coeffs.reshape(coeffs.shape[0], coeffs.shape[2]).contiguous()
+                            filtered_coeffs = torch.index_select(flat_coeffs, 1, indices_tensor)
+                            coeffs = filtered_coeffs.reshape(filtered_coeffs.shape[1], 1)
+                        else:
+                            coeffs = coeffs.reshape(coeffs.shape[2], 1)
+                
+                scattering_sequence.append(coeffs.squeeze(-1))
+            
+            scattering_coeffs = torch.stack(scattering_sequence, dim=0)
         
         if self.mode in ['dual', 'raw_only']:
             if self.mode == 'dual':
-                lag_start = start_idx + self.window_size - self.time_lags
-                lag_end = start_idx + self.window_size
+                lag_start = start_idx + self.window_size * self.scattering_sequence_length - self.time_lags
+                lag_end = start_idx + self.window_size * self.scattering_sequence_length
             else:
                 lag_start = start_idx
                 lag_end = start_idx + self.time_lags
