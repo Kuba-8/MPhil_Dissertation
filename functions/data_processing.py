@@ -11,13 +11,12 @@ class TimeSeriesDataset(Dataset):
     Universal dataset class for time series forecasting that can handle:
         1. Combined scattering + raw data (for dual-input LSTM)
         2. Raw data only (for pure LSTM)
-        3. Scattering coefficients only (for scattering-only models)
         
         Args:
             data (np.ndarray): Time series data as a numpy array
             window_size (int): Size of the input window
             forecast_horizon (int): Number of steps to forecast
-            mode (str): One of 'combined', 'raw_only', or 'scattering_only'
+            mode (str): One of 'combined', 'raw_only'
             scattering_transform (kymatio.torch.Scattering1D, optional): Scattering transform object
             step (int): Step size for windowing the data, also known as the stride
     """
@@ -42,7 +41,7 @@ class TimeSeriesDataset(Dataset):
         self.precomputed_scattering = precomputed_scattering
         self.scattering_sequence_length = scattering_sequence_length
         
-        if mode in ['dual', 'scattering_only']:
+        if mode == 'dual':
             if window_size is None or (scattering_transform is None and precomputed_scattering is None):
                 raise ValueError(f"window_size and (scattering_transform or precomputed_scattering) required for mode '{mode}'")
         
@@ -54,10 +53,8 @@ class TimeSeriesDataset(Dataset):
             max_lookback = window_size * scattering_sequence_length
         elif mode == 'raw_only':
             max_lookback = time_lags
-        elif mode == 'scattering_only':
-            max_lookback = window_size * scattering_sequence_length
         else:
-            raise ValueError(f"Invalid mode: {mode}. Must be 'dual', 'raw_only', or 'scattering_only'")
+            raise ValueError(f"Invalid mode: {mode}. Must be 'dual' or 'raw_only'")
         
         self.indices = list(range(0, len(data) - max_lookback - forecast_horizon + 1, step))
         
@@ -74,13 +71,11 @@ class TimeSeriesDataset(Dataset):
             target_start = start_idx + self.window_size * self.scattering_sequence_length
         elif self.mode == 'raw_only':
             target_start = start_idx + self.time_lags
-        elif self.mode == 'scattering_only':
-            target_start = start_idx + self.window_size * self.scattering_sequence_length
             
         target = self.data[target_start:target_start + self.forecast_horizon].flatten()
         target_tensor = torch.tensor(target, dtype=torch.float32)
         
-        if self.mode in ['dual', 'scattering_only']:
+        if self.mode == 'dual':
             scattering_sequence = []
             
             for seq_idx in range(self.scattering_sequence_length):
@@ -124,8 +119,6 @@ class TimeSeriesDataset(Dataset):
             return scattering_coeffs, lag_window_tensor, target_tensor
         elif self.mode == 'raw_only':
             return lag_window_tensor, target_tensor
-        elif self.mode == 'scattering_only':
-            return scattering_coeffs, target_tensor
 
 def precompute_scattering_coefficients(data, window_size, scattering_transform, step=1, high_energy_indices=None):
     """
@@ -217,22 +210,22 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
     plt.plot(test_data.index, test_data_flat, color='orange', alpha=0.7, linewidth=0.8, label='Test Data')
     plt.title(f'Complete Dataset - Train: {len(train_data_flat)} pts, Test: {len(test_data_flat)} pts', fontsize=14)
     plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Energy Load (kWh)', fontsize=12)
+    plt.ylabel('Energy Load (MW)', fontsize=12)
     plt.legend(fontsize=9)
     plt.grid(True, alpha=0.3)
     
     # One years of raw tiem series data, for two random years (e.g. 2017)
 
     plt.subplot(5, 2, 2)
-    start_2016 = pd.to_datetime('2017-01-01')
-    end_2018 = pd.to_datetime('2018-01-01')
+    start_2016 = pd.to_datetime('2022-01-01')
+    end_2018 = pd.to_datetime('2023-01-01')
 
     mask_2016_2018 = (complete_data.index >= start_2016) & (complete_data.index < end_2018)
     subset_data = complete_data[mask_2016_2018]
     plt.plot(subset_data.index, subset_data.values.flatten())
-    plt.title(f'Energy Data 2017-2018 ({len(subset_data)} points)', fontsize=14)
+    plt.title(f'Energy Data 2022-2023 ({len(subset_data)} points)', fontsize=14)
     plt.xlabel('Date/Time', fontsize=12)
-    plt.ylabel('Energy load (kWh)', fontsize=12)
+    plt.ylabel('Energy load (MW)', fontsize=12)
     plt.grid(True, alpha=0.3)
     
     # ACF plot, using first 5000 points and seasonally adjusted series (with CI's)
@@ -271,7 +264,7 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
 
     month_length = 24 * 25
     colors_months = plt.cm.viridis(np.linspace(0, 1, 3))
-    month_names = ['June 2016', 'July 2016', 'August 2016']
+    month_names = ['June 2018', 'July 2018', 'August 2018']
 
     target_weekday = 0
     weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -283,7 +276,7 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
     print(f"Using month_length = {month_length} points ({month_length/24:.0f} days)")
 
     for i, month_num in enumerate([6, 7, 8]):
-        month_mask = (complete_data.index.year == 2016) & (complete_data.index.month == month_num)
+        month_mask = (complete_data.index.year == 2018) & (complete_data.index.month == month_num)
         month_data_available = complete_data[month_mask]
         
         if len(month_data_available) == 0:
@@ -314,16 +307,16 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
                 
                 print(f"{month_names[i]}: {len(month_data)} points from {aligned_start.strftime('%A, %B %d')}")
 
-    plt.title('Superimposed Summer Months from 2016', fontsize=12)
+    plt.title('Superimposed Summer Months from 2018', fontsize=12)
     plt.xlabel('Hours from first Monday of the month', fontsize=12)
-    plt.ylabel('Energy load in kWh', fontsize=12)
+    plt.ylabel('Energy load in MW', fontsize=12)
     plt.legend(loc='upper right', fontsize=9)
     plt.grid(True, alpha=0.3)
     
     # Superimposed 3 consecutive years with hourly data (not daily averaged)
 
     plt.subplot(5, 2, 5)
-    years_to_plot = [2012, 2013, 2014]
+    years_to_plot = [2019, 2020, 2021]
     colors_years = plt.cm.plasma(np.linspace(0, 1, 5))
     
     for i, year in enumerate(years_to_plot):
@@ -336,9 +329,9 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
                 plt.plot(hour_range, year_data[:display_length], alpha=0.8, 
                         color=colors_years[i], label=f'Year {year}', linewidth=1.0)
     
-    plt.title(f'Superimposed Energy Load for 2012, 2013 and 2014', fontsize=14)
+    plt.title(f'Superimposed Energy Load for 2019, 2020 and 2021', fontsize=14)
     plt.xlabel('Hours within a Year', fontsize=12)
-    plt.ylabel('Energy Load (kWh)', fontsize=12)
+    plt.ylabel('Energy Load (MW)', fontsize=12)
     plt.legend(loc='upper right')
     plt.grid(True, alpha=0.3)
     
@@ -395,7 +388,7 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
     
     plt.title('Daily patterns- first week of the dataset)', fontsize=12)
     plt.xlabel('Hour of the day', fontsize=12)
-    plt.ylabel('Energy Load in kWh', fontsize=12)
+    plt.ylabel('Energy Load in MW', fontsize=12)
     plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
     plt.grid(True, alpha=0.3)
     
@@ -405,7 +398,7 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
     plt.subplot(5, 2, 8)
     plt.hist(data_flat, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
     plt.title('Energy Load Distribution', fontsize=14)
-    plt.xlabel('Energy Load (kWh)', fontsize=12)
+    plt.xlabel('Energy Load (MW)', fontsize=12)
     plt.ylabel('Frequency', fontsize=12)
     plt.grid(True, alpha=0.3)
     

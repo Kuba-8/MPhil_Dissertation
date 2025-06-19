@@ -147,36 +147,6 @@ class PureLSTM(nn.Module):
         
         return output
 
-# Defining the class for the Third LSTM model, which only takes the scattering coefficients as inputs
-# Architecture has similarly changed to a more standard LSTM
-# Based on the literature essentially, decided prior model was very poorly motivated
-class ScatteringOnlyLSTM(nn.Module):
-    def __init__(self, scattering_dim, hidden_dim, output_dim, dropout_rate, num_layers=1):
-        super(ScatteringOnlyLSTM, self).__init__()
-        self.lstm = nn.LSTM(scattering_dim, hidden_dim, num_layers=num_layers, 
-                          batch_first=True, dropout=dropout_rate if num_layers > 1 else 0)
-        
-        self.dropout = nn.Dropout(dropout_rate)
-        self.fc1 = nn.Linear(hidden_dim, 100)
-        self.relu1 = nn.ReLU()
-        self.fc2 = nn.Linear(100, 60)
-        self.relu2 = nn.ReLU()
-        self.fc3 = nn.Linear(60, 50)
-        self.relu3 = nn.ReLU()
-        self.fc_out = nn.Linear(50, output_dim)
-
-    def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        lstm_out = lstm_out[:, -1, :]
-        
-        x = self.dropout(lstm_out)
-        x = self.relu1(self.fc1(x))
-        x = self.relu2(self.fc2(x))
-        x = self.relu3(self.fc3(x))
-        output = self.fc_out(x)
-        
-        return output
-
 def train_and_evaluate_fold(fold_train_data, fold_val_data, model_type, params,
                            window_size, forecast_horizon, time_lags, 
                            scattering, high_energy_indices, device, step_size=4,
@@ -227,31 +197,6 @@ def train_and_evaluate_fold(fold_train_data, fold_val_data, model_type, params,
         
         model = PureLSTM(
             input_dim=time_lags,
-            hidden_dim=params['hidden_dim'],
-            output_dim=forecast_horizon,
-            dropout_rate=params['dropout_rate'],
-            num_layers=params['num_layers']
-        ).to(device)
-        
-    else:
-        train_dataset = TimeSeriesDataset(
-            fold_train_data, forecast_horizon, mode='scattering_only',
-            window_size=window_size, scattering_transform=scattering,
-            step=4, high_energy_indices=high_energy_indices,
-            precomputed_scattering=precomputed_train_scattering
-        )
-        val_dataset = TimeSeriesDataset(
-            fold_val_data, forecast_horizon, mode='scattering_only',
-            window_size=window_size, scattering_transform=scattering,
-            step=1, high_energy_indices=high_energy_indices,
-            precomputed_scattering=precomputed_val_scattering
-        )
-        
-        sample_batch = next(iter(DataLoader(train_dataset, batch_size=1)))
-        scattering_dim = sample_batch[0].shape[2]
-        
-        model = ScatteringOnlyLSTM(
-            scattering_dim=scattering_dim,
             hidden_dim=params['hidden_dim'],
             output_dim=forecast_horizon,
             dropout_rate=params['dropout_rate'],
@@ -324,18 +269,18 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
                                            num_random_starts=20, random_search_trials=15, batch_size=32, scattering_sequence_length=4):
     """
     Optimized version: Generates rolling window forecasts using Wavelet Scattering 
-    Transform and LSTM, Pure LSTM, Scattering-Only LSTM, and SARIMA for large datasets
+    Transform and LSTM, Pure LSTM, and SARIMA for large datasets
 
     Modified to implement time series cross validation and random starting points within the data for evaluation
     """
     
     set_random_seeds(random_seed)
 
-    # Dataset here is almost 200k data points, so just to speed up training have limited it to 8k
+    # Dataset here is almost 200k data points, so just to speed up training have limited it to 50k
     # Final thing will use more
     if len(train_data) > 120000:
-        print(f"Training on last 8000 points of {len(train_data)} total points")
-        train_data = train_data[-30000:]
+        print(f"Training on last 50000 points of {len(train_data)} total points")
+        train_data = train_data[-50000:]
     
     # Fitting the scaler only on the training data, for now
     scaler = MinMaxScaler()
@@ -408,12 +353,12 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
             'dropout_rate': dropout_rate,
             'learning_rate': learning_rate,
             'num_layers': num_layers,
-            'epochs': 40
+            'epochs': 30
         }
         
         print(f"\nTesting config {trial+1}/15: hidden_dim={hidden_dim}, dropout={dropout_rate}, lr={learning_rate}, num_layers={num_layers}")
         
-        fold_scores = {'lstm_scattering': [], 'pure_lstm': [], 'scattering_only': []}
+        fold_scores = {'lstm_scattering': [], 'pure_lstm': []}
         
         for fold, (train_idx, val_idx) in enumerate(tscv.split(train_data_scaled)):
             print(f"  Fold {fold + 1}/{n_splits}")
@@ -426,7 +371,7 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
             fold_val_scattering = {idx: precomputed_scattering_all[train_idx[0] + idx] 
                                  for idx in range(len(fold_val_data) - window_size + 1)}
             
-            for model_type in ['lstm_scattering', 'pure_lstm', 'scattering_only']:
+            for model_type in ['lstm_scattering', 'pure_lstm']:
                 fold_score = train_and_evaluate_fold(
                     fold_train_data, fold_val_data, model_type,
                     current_params, window_size, forecast_horizon,
@@ -450,7 +395,7 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
             best_cv_score = mean_scores['lstm_scattering']
             best_config = config_result
         
-        print(f"  CV Scores: LSTM+Scattering={mean_scores['lstm_scattering']:.6f}, Pure LSTM={mean_scores['pure_lstm']:.6f}, Scattering-Only={mean_scores['scattering_only']:.6f}")
+        print(f"  CV Scores: LSTM+Scattering={mean_scores['lstm_scattering']:.6f}, Pure LSTM={mean_scores['pure_lstm']:.6f}")
     
     print(f"\n=== BEST CONFIGURATION ===")
     print(f"Parameters: {best_config['params']}")
@@ -525,32 +470,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
         step=1
     )
 
-    # Creating an alternative dataset for the scattering-only LSTM model 
-    # (no raw data points, only scattering coefficients)
-    scattering_only_train_dataset = TimeSeriesDataset(
-        final_train_data,
-        forecast_horizon,
-        mode='scattering_only',
-        window_size=window_size,
-        scattering_transform=scattering.to(device),
-        step=step_size,
-        high_energy_indices=high_energy_indices,
-        precomputed_scattering=train_scattering_dict,
-        scattering_sequence_length=scattering_sequence_length
-    )
-    
-    scattering_only_val_dataset = TimeSeriesDataset(
-        final_val_data,
-        forecast_horizon,
-        mode='scattering_only',
-        window_size=window_size,
-        scattering_transform=scattering.to(device),
-        step=1,
-        high_energy_indices=high_energy_indices,
-        precomputed_scattering=val_scattering_dict,
-        scattering_sequence_length=scattering_sequence_length
-    )
-
     batch_size = batch_size
     train_loader = DataLoader(
         train_dataset, 
@@ -583,31 +502,12 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
         num_workers=0,
         pin_memory=torch.cuda.is_available()
     )
-
-    scattering_only_train_loader = DataLoader(
-        scattering_only_train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-        pin_memory=torch.cuda.is_available()
-    )
-    
-    scattering_only_val_loader = DataLoader(
-        scattering_only_val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=torch.cuda.is_available()
-    )
     
     sample_batch = next(iter(train_loader))
     sample_scattering, sample_raw, sample_target = sample_batch
     
     scattering_shape = sample_scattering.shape[2]
     print(f"Scattering shape after filtering: {scattering_shape}")
-    
-    scattering_only_sample = next(iter(scattering_only_train_loader))
-    scattering_only_input, _ = scattering_only_sample
     
     # Initialize the models
     lstm_scattering_model = ScatteringLSTM(
@@ -629,15 +529,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
     )
     pure_lstm_model.to(device)
     
-    scattering_only_model = ScatteringOnlyLSTM(
-        scattering_dim=scattering_only_input.shape[1],
-        hidden_dim=best_params['hidden_dim'],
-        output_dim=forecast_horizon,
-        dropout_rate=best_params['dropout_rate'],
-        num_layers=best_params['num_layers']
-    )
-    scattering_only_model.to(device)
-    
     print(f"LSTM+Scattering Model Architecture:")
     print(f"  Hidden Dimensions: {best_params['hidden_dim']}")
     print(f"  Number of Layers: {best_params['num_layers']}")
@@ -650,22 +541,14 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
     print(f"  Dropout Rate: {best_params['dropout_rate']}")
     print(f"  Total Parameters: {sum(p.numel() for p in pure_lstm_model.parameters())}")
     
-    print(f"\nScattering-Only LSTM Model Architecture:")
-    print(f"  Hidden Dimensions: {best_params['hidden_dim']}")
-    print(f"  Number of Layers: {best_params['num_layers']}")
-    print(f"  Dropout Rate: {best_params['dropout_rate']}")
-    print(f"  Total Parameters: {sum(p.numel() for p in scattering_only_model.parameters())}")
-    
     optimizer_scattering = optim.Adam(lstm_scattering_model.parameters(), lr=best_params['learning_rate'])
     optimizer_pure = optim.Adam(pure_lstm_model.parameters(), lr=best_params['learning_rate'])
-    optimizer_scattering_only = optim.Adam(scattering_only_model.parameters(), lr=best_params['learning_rate'])
     criterion = nn.MSELoss()
     
     lstm_scattering_start_time = time.time()
     lstm_scattering_model.train()
 
     early_stop_patience = 40
-    early_stop_patience_scattering_only = 3
     best_val_loss_scattering = float('inf')
     patience_counter_scattering = 0
     
@@ -806,76 +689,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
     pure_lstm_training_time = time.time() - pure_lstm_start_time
     print(f"Pure LSTM training completed in {pure_lstm_training_time:.2f} seconds")
     
-    # Finally, Training the Scattering-Only LSTM model
-    scattering_only_start_time = time.time()
-    scattering_only_model.train()
-    
-    best_val_loss_scattering_only = float('inf')
-    patience_counter_scattering_only = 0
-    
-    print("\n===== Training Scattering-Only LSTM Model =====")
-    for epoch in range(best_params['epochs']):
-        epoch_train_loss = 0
-        batch_count = 0
-        
-        scattering_only_model.train()
-        for inputs_batch, targets_batch in scattering_only_train_loader:
-            batch_count += 1
-            
-            inputs_batch = inputs_batch.to(device)
-            targets_batch = targets_batch.to(device)
-            
-            optimizer_scattering_only.zero_grad()
-            
-            outputs = scattering_only_model(inputs_batch)
-            loss = criterion(outputs, targets_batch)
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(scattering_only_model.parameters(), 1.0)
-            optimizer_scattering_only.step()
-            
-            epoch_train_loss += loss.item()
-            
-            if batch_count % 20 == 0:
-                print(f"Epoch {epoch+1}/{best_params['epochs']}, Batch {batch_count}/{len(scattering_only_train_loader)}, Loss: {loss.item():.6f}")
-        
-        avg_train_loss = epoch_train_loss / batch_count
-        
-        # Validation
-        scattering_only_model.eval()
-        val_loss = 0
-        val_batch_count = 0
-        with torch.no_grad():
-            for inputs_batch, targets_batch in scattering_only_val_loader:
-                val_batch_count += 1
-                
-                inputs_batch = inputs_batch.to(device)
-                targets_batch = targets_batch.to(device)
-                
-                outputs = scattering_only_model(inputs_batch)
-                loss = criterion(outputs, targets_batch)
-                val_loss += loss.item()
-        
-        avg_val_loss = val_loss / val_batch_count
-        print(f"Epoch {epoch+1}/{best_params['epochs']} complete. Train loss: {avg_train_loss:.6f}, Val loss: {avg_val_loss:.6f}")
-        
-        if avg_val_loss < best_val_loss_scattering_only:
-            best_val_loss_scattering_only = avg_val_loss
-            patience_counter_scattering_only = 0
-            torch.save(scattering_only_model.state_dict(), 'best_energy_forecast_scattering_only_model.pt')
-        else:
-            patience_counter_scattering_only += 1
-            print(f"Early stopping patience: {patience_counter_scattering_only}/{early_stop_patience_scattering_only}")
-            if patience_counter_scattering_only >= early_stop_patience_scattering_only:
-                print("Early stopping triggered!")
-                break
-    
-    # Loading the best pure scattering model
-    scattering_only_model.load_state_dict(torch.load('best_energy_forecast_scattering_only_model.pt'))
-    
-    scattering_only_training_time = time.time() - scattering_only_start_time
-    print(f"Scattering-Only LSTM training completed in {scattering_only_training_time:.2f} seconds")
-    
     # Updated section here!
     # Put in a SARIMA function using AIC score minimisation, instead of just using the random ARIMA
     # (as I said I would)
@@ -903,8 +716,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
 
     test_data_scaled = scaler.transform(test_data)
 
-    #forecast_steps = FORECAST_STEPS
-
     min_required_length = max(window_size, time_lags) + forecast_steps
     available_starts = len(test_data) - min_required_length
 
@@ -917,7 +728,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
 
     all_lstm_scattering_sequences = []
     all_pure_lstm_sequences = []
-    all_scattering_only_sequences = []
     all_sarima_sequences = []
     all_actual_sequences = []
     all_training_times = []
@@ -939,14 +749,12 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
         lstm_scattering_lag = full_data_scaled[train_end_idx - time_lags + 1:train_end_idx+1].flatten()
         
         pure_lstm_lag = lstm_scattering_lag.copy()
-        scattering_only_windows = [w.copy() for w in lstm_scattering_windows]
         
         actual_sequence = test_data.iloc[start_idx:start_idx + forecast_steps].values.flatten()
         all_actual_sequences.append(actual_sequence)
         
         lstm_scattering_preds = np.zeros(forecast_steps)
         pure_lstm_preds = np.zeros(forecast_steps)
-        scattering_only_preds = np.zeros(forecast_steps)
         sarima_preds = np.zeros(forecast_steps)
         
         sarima_start_time = time.time()
@@ -1012,35 +820,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
                 pure_lstm_pred_scaled = pure_lstm_model(pure_lstm_input).cpu().numpy().flatten()
                 pure_lstm_pred = scaler.inverse_transform(pure_lstm_pred_scaled.reshape(-1, 1)).flatten()
                 pure_lstm_preds[step] = pure_lstm_pred[0]
-                
-                scattering_only_sequence = []
-                for window in scattering_only_windows:
-                    window_tensor = torch.tensor(window, dtype=torch.float32).to(device)
-                    window_mean = torch.mean(window_tensor)
-                    window_std = torch.std(window_tensor) + 1e-8
-                    window_norm = (window_tensor - window_mean) / window_std
-                    
-                    scattering_only_input = window_norm.reshape(1, 1, -1)
-                    scattering_only_coeffs = scattering(scattering_only_input)
-                    
-                    if high_energy_indices is not None:
-                        indices_tensor = torch.tensor(high_energy_indices, dtype=torch.long, device=device)
-                        flat_coeffs = scattering_only_coeffs.reshape(scattering_only_coeffs.shape[0], scattering_only_coeffs.shape[2]).contiguous()
-                        filtered_coeffs = torch.index_select(flat_coeffs, 1, indices_tensor)
-                        scattering_only_coeffs = filtered_coeffs.reshape(filtered_coeffs.shape[1])
-                    else:
-                        scattering_only_coeffs = scattering_only_coeffs.reshape(scattering_only_coeffs.shape[2])
-                    
-                    scattering_only_sequence.append(scattering_only_coeffs)
-                
-
-                scattering_only_seq_tensor = torch.stack(scattering_only_sequence, dim=0).unsqueeze(0)
-                
-
-                scattering_only_model.eval()
-                scattering_only_pred_scaled = scattering_only_model(scattering_only_seq_tensor).cpu().numpy().flatten()
-                scattering_only_pred = scaler.inverse_transform(scattering_only_pred_scaled.reshape(-1, 1)).flatten()
-                scattering_only_preds[step] = scattering_only_pred[0]
 
                 # Updating each window with predicted valuee to make it a true recursion
                 
@@ -1054,22 +833,16 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
                 
                 pure_lstm_lag = np.roll(pure_lstm_lag, -1)
                 pure_lstm_lag[-1] = pure_lstm_pred_scaled[0]
-                
-                for i in range(len(scattering_only_windows)):
-                    scattering_only_windows[i] = np.roll(scattering_only_windows[i], -1)
-                    scattering_only_windows[i][-1] = scattering_only_pred_scaled[0]
             
             if (step + 1) % 5 == 0:
                 print(f"  Completed step {step+1}/{forecast_steps} for starting point {start_idx}")
         
         all_lstm_scattering_sequences.append(lstm_scattering_preds)
         all_pure_lstm_sequences.append(pure_lstm_preds)
-        all_scattering_only_sequences.append(scattering_only_preds)
         all_sarima_sequences.append(sarima_preds)
         
         all_training_times.append({
             'lstm_scattering': lstm_scattering_training_time / num_random_starts,
-            'scattering_only': scattering_only_training_time / num_random_starts,
             'pure_lstm': pure_lstm_training_time / num_random_starts,
             'sarima': sarima_training_time
         })
@@ -1082,20 +855,18 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
 
     all_lstm_scattering_sequences = np.array(all_lstm_scattering_sequences)
     all_pure_lstm_sequences = np.array(all_pure_lstm_sequences)
-    all_scattering_only_sequences = np.array(all_scattering_only_sequences)
     all_sarima_sequences = np.array(all_sarima_sequences)
     all_actual_sequences = np.array(all_actual_sequences)
 
     training_times = {
         'lstm_scattering': [lstm_scattering_training_time],
-        'scattering_only': [scattering_only_training_time], 
         'pure_lstm': [pure_lstm_training_time],
         'sarima': [np.mean([t['sarima'] for t in all_training_times])]
     }
 
     weight_analysis = analyze_model_weights(lstm_scattering_model, best_params)
 
-    return (all_lstm_scattering_sequences, all_pure_lstm_sequences, all_scattering_only_sequences, 
+    return (all_lstm_scattering_sequences, all_pure_lstm_sequences, 
             all_actual_sequences, all_sarima_sequences, training_times, lstm_scattering_model, 
-            pure_lstm_model, scattering_only_model, 
+            pure_lstm_model, 
             random_start_indices, best_config)

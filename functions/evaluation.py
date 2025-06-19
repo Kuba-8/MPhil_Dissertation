@@ -3,7 +3,7 @@ import numpy as np
 
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forecasts, scattering_only_forecasts, sarima_forecasts):
+def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forecasts, sarima_forecasts):
     """
     Just a load of forecast evaluation metrics
     """
@@ -16,10 +16,6 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     pure_lstm_mae = mean_absolute_error(actual_values, pure_lstm_forecasts)
     pure_lstm_rmse = np.sqrt(pure_lstm_mse)
     
-    scattering_only_mse = mean_squared_error(actual_values, scattering_only_forecasts)
-    scattering_only_mae = mean_absolute_error(actual_values, scattering_only_forecasts)
-    scattering_only_rmse = np.sqrt(scattering_only_mse)
-    
     sarima_mse = mean_squared_error(actual_values, sarima_forecasts)
     sarima_mae = mean_absolute_error(actual_values, sarima_forecasts)
     sarima_rmse = np.sqrt(sarima_mse)
@@ -29,7 +25,6 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     
     lstm_scattering_mape = mape(actual_values, lstm_scattering_forecasts)
     pure_lstm_mape = mape(actual_values, pure_lstm_forecasts)
-    scattering_only_mape = mape(actual_values, scattering_only_forecasts)
     sarima_mape = mape(actual_values, sarima_forecasts)
     
     # Directional accuracy = whether it is predicting up/down movement correctly
@@ -41,23 +36,15 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     
     lstm_scattering_dir_acc = directional_accuracy(actual_values, lstm_scattering_forecasts)
     pure_lstm_dir_acc = directional_accuracy(actual_values, pure_lstm_forecasts)
-    scattering_only_dir_acc = directional_accuracy(actual_values, scattering_only_forecasts)
     sarima_dir_acc = directional_accuracy(actual_values, sarima_forecasts)
     
-    print("\n===== Comprehensive Forecast Evaluation =====")
+    print("\n~~Comprehensive Forecast Evaluation~~")
     print(f"LSTM+Scattering Metrics:")
     print(f"  MSE: {lstm_scattering_mse:.2f}")
     print(f"  RMSE: {lstm_scattering_rmse:.2f}")
     print(f"  MAE: {lstm_scattering_mae:.2f}")
     print(f"  MAPE: {lstm_scattering_mape:.2f}%")
     print(f"  Directional Accuracy: {lstm_scattering_dir_acc:.2f}%")
-    
-    print(f"\nScattering-Only LSTM Metrics:")
-    print(f"  MSE: {scattering_only_mse:.2f}")
-    print(f"  RMSE: {scattering_only_rmse:.2f}")
-    print(f"  MAE: {scattering_only_mae:.2f}")
-    print(f"  MAPE: {scattering_only_mape:.2f}%")
-    print(f"  Directional Accuracy: {scattering_only_dir_acc:.2f}%")
     
     print(f"\nPure LSTM Metrics:")
     print(f"  MSE: {pure_lstm_mse:.2f}")
@@ -78,25 +65,13 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
     print(f"    MSE: {(sarima_mse - lstm_scattering_mse) / sarima_mse * 100:.2f}% lower with LSTM+Scattering")
     print(f"    MAE: {(sarima_mae - lstm_scattering_mae) / sarima_mae * 100:.2f}% lower with LSTM+Scattering")
     
-    print(f"\n  Scattering-Only LSTM vs SARIMA:")
-    print(f"    MSE: {(sarima_mse - scattering_only_mse) / sarima_mse * 100:.2f}% lower with Scattering-Only LSTM")
-    print(f"    MAE: {(sarima_mae - scattering_only_mae) / sarima_mae * 100:.2f}% lower with Scattering-Only LSTM")
-    
     print(f"\n  Pure LSTM vs SARIMA:")
     print(f"    MSE: {(sarima_mse - pure_lstm_mse) / sarima_mse * 100:.2f}% lower with Pure LSTM")
     print(f"    MAE: {(sarima_mae - pure_lstm_mae) / sarima_mae * 100:.2f}% lower with Pure LSTM")
     
-    print(f"\n  LSTM+Scattering vs Pure LSTM:")
+    print(f"\n  LSTM+Scatering vs Pure LSTM:")
     print(f"    MSE: {(pure_lstm_mse - lstm_scattering_mse) / pure_lstm_mse * 100:.2f}% lower with LSTM+Scattering")
     print(f"    MAE: {(pure_lstm_mae - lstm_scattering_mae) / pure_lstm_mae * 100:.2f}% lower with LSTM+Scattering")
-    
-    print(f"\n  LSTM+Scattering vs Scattering-Only LSTM:")
-    print(f"    MSE: {(scattering_only_mse - lstm_scattering_mse) / scattering_only_mse * 100:.2f}% lower with LSTM+Scattering")
-    print(f"    MAE: {(scattering_only_mae - lstm_scattering_mae) / scattering_only_mae * 100:.2f}% lower with LSTM+Scattering")
-    
-    print(f"\n  Scattering-Only LSTM vs Pure LSTM:")
-    print(f"    MSE: {(pure_lstm_mse - scattering_only_mse) / pure_lstm_mse * 100:.2f}% lower with Scattering-Only LSTM")
-    print(f"    MAE: {(pure_lstm_mae - scattering_only_mae) / pure_lstm_mae * 100:.2f}% lower with Scattering-Only LSTM")
     
     return {
         'lstm_scattering': {
@@ -105,13 +80,6 @@ def evaluate_forecasts(actual_values, lstm_scattering_forecasts, pure_lstm_forec
             'mae': lstm_scattering_mae,
             'mape': lstm_scattering_mape,
             'dir_acc': lstm_scattering_dir_acc
-        },
-        'scattering_only': {
-            'mse': scattering_only_mse,
-            'rmse': scattering_only_rmse,
-            'mae': scattering_only_mae,
-            'mape': scattering_only_mape,
-            'dir_acc': scattering_only_dir_acc
         },
         'pure_lstm': {
             'mse': pure_lstm_mse,
@@ -139,12 +107,13 @@ def analyze_model_weights(lstm_model, lstm_params):
     lstm_model.eval()
     
     # Extracting the weights from the fully connected layer
-    fc_weights = lstm_model.fc.weight.data.cpu().numpy()
+    fc_weights = lstm_model.fc1.weight.data.cpu().numpy()
 
     # First half correspond to the scattering LSTM
     # Second half correspond to the raw data LSTM
-    scattering_weights = fc_weights[:, :lstm_params['hidden_dim']]
-    raw_data_weights = fc_weights[:, lstm_params['hidden_dim']:]
+    scattering_hidden_dim = lstm_params['hidden_dim'] // 2
+    scattering_weights = fc_weights[:, :scattering_hidden_dim]
+    raw_data_weights = fc_weights[:, scattering_hidden_dim:scattering_hidden_dim + lstm_params['hidden_dim']]
 
     # Calcu the absolute sum of weights for each component
     # (= overall influence of each component)

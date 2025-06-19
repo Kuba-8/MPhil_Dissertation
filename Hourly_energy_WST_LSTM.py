@@ -8,13 +8,14 @@ import random
 
 from functions import modelling as mdl
 from functions import evaluation as eval
+from functions import data_processing
 
 if __name__ == "__main__":
     
     GLOBAL_SEED = 42 # Claaaaaaasic
     mdl.set_random_seeds(GLOBAL_SEED)
     
-    df = pd.read_excel("/Users/jakubfridrich/Documents/Hourly_energy_c_COMED_2005-25.xlsx")
+    df = pd.read_excel("data/Hourly_energy_c_COMED_2005-25.xlsx")
     df = df[['datetime_beginning_ept', 'mw']]
     df["Date"] = pd.to_datetime(df["datetime_beginning_ept"])
     df.set_index("Date", inplace=True)
@@ -22,7 +23,7 @@ if __name__ == "__main__":
 
     print(f"Dataset loaded: {len(df)} points")
 
-    test_start_date = pd.to_datetime('2022-04-01 00:00:00')
+    test_start_date = pd.to_datetime('2023-11-30 03:00:00')
 
     train_data = df[df.index < test_start_date]
     test_data = df[df.index >= test_start_date]
@@ -32,16 +33,16 @@ if __name__ == "__main__":
 
     # (Hyper)parameters that I have done quite a lot of messing with
 
-    WINDOW_SIZE = 256
+    WINDOW_SIZE = 128
     FORECAST_HORIZON = 1
-    TIME_LAGS = 72
+    TIME_LAGS = 60
     STEP_SIZE = 7
-    ENERGY_THRESHOLD = 0.9
+    ENERGY_THRESHOLD = 0.99
     
     MULTI_STEP_FORECAST = True
     FORECAST_STEPS = 772
     NUMBER_OF_TRIALS_RANDOM_SEARCH = 20
-    CV_SPLITS= 5
+    CV_SPLITS= 3
     NUM_RANDOM_STARTS= 20
     BATCH_SIZE = 32
     SCATTERING_SEQUENCE_LENGTH = 6
@@ -58,7 +59,7 @@ if __name__ == "__main__":
         'dropout_rates': [0.1, 0.2, 0.3, 0.4],
         'learning_rates': [0.0001, 0.001, 0.003, 0.005],
         'num_layers': [1, 2, 3],
-        'full_epochs': 300
+        'full_epochs': 100
     }
 
     print("Starting forecasting with time-series cross validation and random starting points...")
@@ -66,9 +67,9 @@ if __name__ == "__main__":
     print(f"Number of random starting points: {NUM_RANDOM_STARTS}")
     start_time = time.time()
 
-    (all_lstm_scattering_sequences, all_pure_lstm_sequences, all_scattering_only_sequences, 
+    (all_lstm_scattering_sequences, all_pure_lstm_sequences, 
      all_actual_sequences, all_sarima_sequences, training_times, lstm_scattering_model, 
-     pure_lstm_model, scattering_only_model, random_start_indices, 
+     pure_lstm_model, random_start_indices, 
      best_config) = mdl.rolling_window_forecast_scattering_lstm_cv(
         train_data, test_data, WINDOW_SIZE, FORECAST_HORIZON, scattering_params, lstm_params_grid, 
         time_lags=TIME_LAGS, random_seed=GLOBAL_SEED, step_size=STEP_SIZE, energy_threshold=ENERGY_THRESHOLD,
@@ -86,14 +87,12 @@ if __name__ == "__main__":
             all_actual_sequences[i], 
             all_lstm_scattering_sequences[i], 
             all_pure_lstm_sequences[i], 
-            all_scattering_only_sequences[i], 
             all_sarima_sequences[i]
         )
         all_metrics.append(metrics)
 
     avg_metrics = {
         'lstm_scattering': {},
-        'scattering_only': {},
         'pure_lstm': {},
         'sarima': {}
     }
@@ -105,10 +104,9 @@ if __name__ == "__main__":
             avg_metrics[model][f'{metric}_std'] = np.std(values)
 
     print(f"\n======= Averaged metrics across {NUM_RANDOM_STARTS} starting points =====")
-    for model in ['lstm_scattering', 'scattering_only', 'pure_lstm', 'sarima']:
+    for model in ['lstm_scattering', 'pure_lstm', 'sarima']:
         model_name = {
             'lstm_scattering': 'LSTM+Scattering',
-            'scattering_only': 'Scattering-Only LSTM', 
             'pure_lstm': 'Pure LSTM',
             'sarima': 'SARIMA'
         }[model]
@@ -122,7 +120,6 @@ if __name__ == "__main__":
 
     lstm_scattering_forecasts = np.mean(all_lstm_scattering_sequences, axis=0)
     pure_lstm_forecasts = np.mean(all_pure_lstm_sequences, axis=0)
-    scattering_only_forecasts = np.mean(all_scattering_only_sequences, axis=0)
     sarima_forecasts = np.mean(all_sarima_sequences, axis=0)
     actual_values = np.mean(all_actual_sequences, axis=0)
 
@@ -152,25 +149,22 @@ if __name__ == "__main__":
         
         actual_sequence = all_actual_sequences[sample_idx_in_arrays]
         lstm_scattering_sequence = all_lstm_scattering_sequences[sample_idx_in_arrays]
-        scattering_only_sequence = all_scattering_only_sequences[sample_idx_in_arrays]
         pure_lstm_sequence = all_pure_lstm_sequences[sample_idx_in_arrays]
         sarima_sequence = all_sarima_sequences[sample_idx_in_arrays]
         
         forecast_dates = test_data.index[start_point:forecast_end]
         min_length = min(len(forecast_dates), len(actual_sequence), 
-                        len(lstm_scattering_sequence), len(scattering_only_sequence),
+                        len(lstm_scattering_sequence),
                         len(pure_lstm_sequence), len(sarima_sequence))
         
         forecast_dates = forecast_dates[:min_length]
         actual_sequence = actual_sequence[:min_length]
         lstm_scattering_sequence = lstm_scattering_sequence[:min_length]
-        scattering_only_sequence = scattering_only_sequence[:min_length]
         pure_lstm_sequence = pure_lstm_sequence[:min_length]
         sarima_sequence = sarima_sequence[:min_length]
         
         plt.plot(forecast_dates, actual_sequence, 'b-', linewidth=3, label='Actual Energy', alpha=0.9)
         plt.plot(forecast_dates, lstm_scattering_sequence, 'r--', linewidth=2, label='LSTM+Wavelet', alpha=0.8)
-        plt.plot(forecast_dates, scattering_only_sequence, color='orange', linestyle='-.', linewidth=2, label='Scattering-Only', alpha=0.8)
         plt.plot(forecast_dates, pure_lstm_sequence, 'm:', linewidth=2, label='Pure LSTM', alpha=0.8)
         plt.plot(forecast_dates, sarima_sequence, 'g-', linewidth=2, label='SARIMA', alpha=0.8)
         
@@ -178,13 +172,11 @@ if __name__ == "__main__":
             plt.axvline(x=forecast_dates[0], color='red', linestyle='--', alpha=0.6, linewidth=2, label='Forecast Start')
         
         mae_lstm_scattering = np.mean(np.abs(actual_sequence - lstm_scattering_sequence))
-        mae_scattering_only = np.mean(np.abs(actual_sequence - scattering_only_sequence))
         mae_pure_lstm = np.mean(np.abs(actual_sequence - pure_lstm_sequence))
         mae_sarima = np.mean(np.abs(actual_sequence - sarima_sequence))
         
         metrics_text = f"""Full Sequence Performance (MAE):
     LSTM+Wavelet: {mae_lstm_scattering:.1f}
-    Scattering-Only: {mae_scattering_only:.1f}
     Pure LSTM: {mae_pure_lstm:.1f}
     SARIMA: {mae_sarima:.1f}
 
@@ -223,25 +215,23 @@ if __name__ == "__main__":
         
         actual_seq = all_actual_sequences[sample_idx_in_arrays]
         lstm_scattering_seq = all_lstm_scattering_sequences[sample_idx_in_arrays]
-        scattering_only_seq = all_scattering_only_sequences[sample_idx_in_arrays]
         pure_lstm_seq = all_pure_lstm_sequences[sample_idx_in_arrays]
         sarima_seq = all_sarima_sequences[sample_idx_in_arrays]
         
         horizons = [24, 72, 168, 336, len(actual_seq)]
         
         print(f"\nSample {idx+1} (Starting Point {start_point}):")
-        print("Horizon\tLSTM+Wavelet\tScattering-Only\tPure LSTM\tSARIMA")
+        print("Horizon\tLSTM+Wavelet\tPure LSTM\tSARIMA")
         
         for h in horizons:
             if h <= len(actual_seq):
                 actual_h = actual_seq[:h]
                 lstm_scattering_mae = np.mean(np.abs(actual_h - lstm_scattering_seq[:h]))
-                scattering_only_mae = np.mean(np.abs(actual_h - scattering_only_seq[:h]))
                 pure_lstm_mae = np.mean(np.abs(actual_h - pure_lstm_seq[:h]))
                 sarima_mae = np.mean(np.abs(actual_h - sarima_seq[:h]))
                 
                 horizon_name = f"{h}h" if h < len(actual_seq) else "Full"
-                print(f"{horizon_name:>7}\t{lstm_scattering_mae:>11.1f}\t{scattering_only_mae:>13.1f}\t{pure_lstm_mae:>9.1f}\t{sarima_mae:>6.1f}")
+                print(f"{horizon_name:>7}\t{lstm_scattering_mae:>11.1f}\t{pure_lstm_mae:>9.1f}\t{sarima_mae:>6.1f}")
 
     
     # Creating a plot to display degradation of these forecasting performance metrics
@@ -249,11 +239,10 @@ if __name__ == "__main__":
     plt.figure(figsize=(15, 10))
 
     horizons = [24, 48, 72, 168, 336, 504, FORECAST_STEPS]
-    avg_errors = {'LSTM+Wavelet': [], 'Scattering-Only': [], 'Pure LSTM': [], 'SARIMA': []}
+    avg_errors = {'LSTM+Wavelet': [], 'Pure LSTM': [], 'SARIMA': []}
 
     for h in horizons:
         lstm_scattering_errors = []
-        scattering_only_errors = []
         pure_lstm_errors = []
         sarima_errors = []
         
@@ -261,18 +250,15 @@ if __name__ == "__main__":
             if h <= len(all_actual_sequences[i]):
                 actual_h = all_actual_sequences[i][:h]
                 lstm_scattering_errors.append(np.mean(np.abs(actual_h - all_lstm_scattering_sequences[i][:h])))
-                scattering_only_errors.append(np.mean(np.abs(actual_h - all_scattering_only_sequences[i][:h])))
                 pure_lstm_errors.append(np.mean(np.abs(actual_h - all_pure_lstm_sequences[i][:h])))
                 sarima_errors.append(np.mean(np.abs(actual_h - all_sarima_sequences[i][:h])))
         
         avg_errors['LSTM+Wavelet'].append(np.mean(lstm_scattering_errors))
-        avg_errors['Scattering-Only'].append(np.mean(scattering_only_errors))
         avg_errors['Pure LSTM'].append(np.mean(pure_lstm_errors))
         avg_errors['SARIMA'].append(np.mean(sarima_errors))
 
     plt.subplot(1, 2, 1)
     plt.plot(horizons, avg_errors['LSTM+Wavelet'], 'ro-', linewidth=2, markersize=6, label='LSTM+Wavelet')
-    plt.plot(horizons, avg_errors['Scattering-Only'], 'o-', color='orange', linewidth=2, markersize=6, label='Scattering-Only')
     plt.plot(horizons, avg_errors['Pure LSTM'], 'mo-', linewidth=2, markersize=6, label='Pure LSTM')
     plt.plot(horizons, avg_errors['SARIMA'], 'go-', linewidth=2, markersize=6, label='SARIMA')
 
@@ -294,8 +280,6 @@ if __name__ == "__main__":
         
         if model == 'LSTM+Wavelet':
             plt.plot(horizons, relative_errors, 'ro-', linewidth=2, markersize=6, label=model)
-        elif model == 'Scattering-Only':
-            plt.plot(horizons, relative_errors, 'o-', color='orange', linewidth=2, markersize=6, label=model)
         elif model == 'Pure LSTM':
             plt.plot(horizons, relative_errors, 'mo-', linewidth=2, markersize=6, label=model)
         else:
@@ -313,10 +297,10 @@ if __name__ == "__main__":
     plt.show()
 
     print(f"\n~~~~~~~~~~~ Summary: Average MAE by Horizon ~~~~~~~~~~~~~~~~~")
-    print("Horizon\tLSTM+Wavelet\tScattering-Only\tPure LSTM\tSARIMA")
+    print("Horizon\tLSTM+Wavelet\tPure LSTM\tSARIMA")
     for i, h in enumerate(horizons):
         horizon_name = f"{h}h" if h < FORECAST_STEPS else "Full"
-        print(f"{horizon_name:>7}\t{avg_errors['LSTM+Wavelet'][i]:>11.1f}\t{avg_errors['Scattering-Only'][i]:>13.1f}\t{avg_errors['Pure LSTM'][i]:>9.1f}\t{avg_errors['SARIMA'][i]:>6.1f}")
+        print(f"{horizon_name:>7}\t{avg_errors['LSTM+Wavelet'][i]:>11.1f}\t{avg_errors['Pure LSTM'][i]:>9.1f}\t{avg_errors['SARIMA'][i]:>6.1f}")
 
     plt.tight_layout()
     plt.savefig('sample_forecast_comparisons.png', dpi=300, bbox_inches='tight')
@@ -334,7 +318,6 @@ if __name__ == "__main__":
     sample_indices_plot = range(len(actual_values))
     plt.scatter(sample_indices_plot, actual_values, label='Actual Energy', color='blue', alpha=0.7, s=40)
     plt.scatter(sample_indices_plot, lstm_scattering_forecasts, label='LSTM+Wavelet', color='red', alpha=0.7, s=40)
-    plt.scatter(sample_indices_plot, scattering_only_forecasts, label='Scattering-Only', color='orange', alpha=0.7, s=40)
     plt.scatter(sample_indices_plot, pure_lstm_forecasts, label='Pure LSTM', color='purple', alpha=0.7, s=40)
     plt.scatter(sample_indices_plot, sarima_forecasts, label='SARIMA', color='green', alpha=0.7, s=40)
     plt.title(f'Forecast Results Summary\n({NUM_RANDOM_STARTS} Random Starting Points)', fontsize=14)
@@ -348,7 +331,6 @@ if __name__ == "__main__":
 
     plt.subplot(2, 3, 2)
     plt.scatter(actual_values, lstm_scattering_forecasts, alpha=0.7, label='LSTM+Wavelet', color='red', s=50)
-    plt.scatter(actual_values, scattering_only_forecasts, alpha=0.7, label='Scattering-Only', color='orange', s=50)
     plt.scatter(actual_values, pure_lstm_forecasts, alpha=0.7, label='Pure LSTM', color='purple', s=50)
     plt.scatter(actual_values, sarima_forecasts, alpha=0.7, label='SARIMA', color='green', s=50)
 
@@ -366,13 +348,13 @@ if __name__ == "__main__":
     # In the following order: MSE, MAE, Directional Accuracy
 
     plt.subplot(2, 3, 3)
-    model_names = ['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'SARIMA']
-    mse_values = [avg_metrics["lstm_scattering"]["mse"], avg_metrics["scattering_only"]["mse"], 
+    model_names = ['LSTM+Wavelet', 'Pure LSTM', 'SARIMA']
+    mse_values = [avg_metrics["lstm_scattering"]["mse"], 
                     avg_metrics["pure_lstm"]["mse"], avg_metrics["sarima"]["mse"]]
-    mse_stds = [avg_metrics["lstm_scattering"]["mse_std"], avg_metrics["scattering_only"]["mse_std"], 
+    mse_stds = [avg_metrics["lstm_scattering"]["mse_std"], 
                 avg_metrics["pure_lstm"]["mse_std"], avg_metrics["sarima"]["mse_std"]]
 
-    bars = plt.bar(model_names, mse_values, yerr=mse_stds, capsize=5, color=['red', 'orange', 'purple', 'green'])
+    bars = plt.bar(model_names, mse_values, yerr=mse_stds, capsize=5, color=['red', 'purple', 'green'])
     plt.title('Average Mean Squared Error Comparison', fontsize=14)
     plt.ylabel('MSE', fontsize=12)
     plt.xticks(rotation=45)
@@ -383,11 +365,11 @@ if __name__ == "__main__":
     plt.grid(True, alpha=0.3, axis='y')
 
     plt.subplot(2, 3, 4)
-    mae_values = [avg_metrics["lstm_scattering"]["mae"], avg_metrics["scattering_only"]["mae"], 
+    mae_values = [avg_metrics["lstm_scattering"]["mae"], 
                     avg_metrics["pure_lstm"]["mae"], avg_metrics["sarima"]["mae"]]
-    mae_stds = [avg_metrics["lstm_scattering"]["mae_std"], avg_metrics["scattering_only"]["mae_std"], 
+    mae_stds = [avg_metrics["lstm_scattering"]["mae_std"], 
                 avg_metrics["pure_lstm"]["mae_std"], avg_metrics["sarima"]["mae_std"]]
-    bars = plt.bar(model_names, mae_values, yerr=mae_stds, capsize=5, color=['red', 'orange', 'purple', 'green'])
+    bars = plt.bar(model_names, mae_values, yerr=mae_stds, capsize=5, color=['red', 'purple', 'green'])
     plt.title('Average Mean Absolute Error Comparison', fontsize=14)
     plt.ylabel('MAE', fontsize=12)
     plt.xticks(rotation=45)
@@ -398,11 +380,11 @@ if __name__ == "__main__":
     plt.grid(True, alpha=0.3, axis='y')
 
     plt.subplot(2, 3, 5)
-    dir_acc_values = [avg_metrics["lstm_scattering"]["dir_acc"], avg_metrics["scattering_only"]["dir_acc"], 
+    dir_acc_values = [avg_metrics["lstm_scattering"]["dir_acc"], 
                         avg_metrics["pure_lstm"]["dir_acc"], avg_metrics["sarima"]["dir_acc"]]
-    dir_acc_stds = [avg_metrics["lstm_scattering"]["dir_acc_std"], avg_metrics["scattering_only"]["dir_acc_std"], 
+    dir_acc_stds = [avg_metrics["lstm_scattering"]["dir_acc_std"], 
                     avg_metrics["pure_lstm"]["dir_acc_std"], avg_metrics["sarima"]["dir_acc_std"]]
-    bars = plt.bar(model_names, dir_acc_values, yerr=dir_acc_stds, capsize=5, color=['red', 'orange', 'purple', 'green'])
+    bars = plt.bar(model_names, dir_acc_values, yerr=dir_acc_stds, capsize=5, color=['red', 'purple', 'green'])
     plt.title('Average Directional Accuracy Comparison', fontsize=14)
     plt.ylabel('Accuracy (%)', fontsize=12)
     plt.xticks(rotation=45)
@@ -424,12 +406,11 @@ if __name__ == "__main__":
     plt.subplot(1, 2, 1)
     avg_training_times = [
         np.mean(training_times['lstm_scattering']),
-        np.mean(training_times['scattering_only']),
         np.mean(training_times['pure_lstm']),
         np.mean(training_times['sarima'])
     ]
-    bars = plt.bar(['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'SARIMA'], 
-            avg_training_times, color=['red', 'orange', 'purple', 'green'])
+    bars = plt.bar(['LSTM+Wavelet', 'Pure LSTM', 'SARIMA'], 
+            avg_training_times, color=['red', 'purple', 'green'])
     plt.title('Average Training Times', fontsize=14)
     plt.ylabel('Time (seconds)', fontsize=12)
     plt.xticks(rotation=45)
@@ -440,10 +421,10 @@ if __name__ == "__main__":
                 f'{value:.1f}s', ha='center', va='bottom', fontsize=11)
 
     plt.subplot(1, 2, 2)
-    model_names = ['LSTM+Wavelet', 'Scattering-Only', 'Pure LSTM', 'SARIMA']
-    mse_values = [avg_metrics["lstm_scattering"]["mse"], avg_metrics["scattering_only"]["mse"], 
+    model_names = ['LSTM+Wavelet', 'Pure LSTM', 'SARIMA']
+    mse_values = [avg_metrics["lstm_scattering"]["mse"], 
                     avg_metrics["pure_lstm"]["mse"], avg_metrics["sarima"]["mse"]]
-    colors = ['red', 'orange', 'purple', 'green']
+    colors = ['red', 'purple', 'green']
 
     plt.scatter(avg_training_times, mse_values, c=colors, s=150, alpha=0.8)
 
@@ -462,7 +443,6 @@ if __name__ == "__main__":
 
     model_mse = {
         'LSTM+Wavelet': avg_metrics["lstm_scattering"]["mse"],
-        'Scattering-Only': avg_metrics["scattering_only"]["mse"], 
         'Pure LSTM': avg_metrics["pure_lstm"]["mse"],
         'SARIMA': avg_metrics["sarima"]["mse"]
     }
