@@ -7,7 +7,7 @@ import numpy as np
 from kymatio.torch import Scattering1D
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 import time
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import RobustScaler
 from torch.utils.data import DataLoader
 import warnings
 import itertools
@@ -278,12 +278,12 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
 
     # Dataset here is almost 200k data points, so just to speed up training have limited it to 50k
     # Final thing will use more
-    if len(train_data) > 120000:
+    if len(train_data) > 100000:
         print(f"Training on last 50000 points of {len(train_data)} total points")
         train_data = train_data[-50000:]
     
     # Fitting the scaler only on the training data, for now
-    scaler = MinMaxScaler()
+    scaler = RobustScaler()
     train_data_scaled = scaler.fit_transform(train_data)
 
     # Initializing the wavelet scattering transform, outside of the training loop
@@ -356,7 +356,7 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
             'epochs': 30
         }
         
-        print(f"\nTesting config {trial+1}/15: hidden_dim={hidden_dim}, dropout={dropout_rate}, lr={learning_rate}, num_layers={num_layers}")
+        print(f"\nTesting config {trial+1}/{random_search_trials}: hidden_dim={hidden_dim}, dropout={dropout_rate}, lr={learning_rate}, num_layers={num_layers}")
         
         fold_scores = {'lstm_scattering': [], 'pure_lstm': []}
         
@@ -578,8 +578,8 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
             epoch_train_loss += loss.item()
             
             # Printing batch progress at intervals of 20, since it takes forever to train and I get scared it is crashing :))
-            if batch_count % 20 == 0:
-                print(f"Epoch {epoch+1}/{best_params['epochs']}, Batch {batch_count}/{len(train_loader)}, Loss: {loss.item():.6f}")
+            #if batch_count % 20 == 0:
+                #print(f"Epoch {epoch+1}/{best_params['epochs']}, Batch {batch_count}/{len(train_loader)}, Loss: {loss.item():.6f}")
         
         avg_train_loss = epoch_train_loss / batch_count
         
@@ -649,8 +649,8 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
             
             epoch_train_loss += loss.item()
             
-            if batch_count % 20 == 0:
-                print(f"Epoch {epoch+1}/{best_params['epochs']}, Batch {batch_count}/{len(pure_lstm_train_loader)}, Loss: {loss.item():.6f}")
+            #if batch_count % 20 == 0:
+                #print(f"Epoch {epoch+1}/{best_params['epochs']}, Batch {batch_count}/{len(pure_lstm_train_loader)}, Loss: {loss.item():.6f}")
         
         avg_train_loss = epoch_train_loss / batch_count
         
@@ -742,8 +742,8 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
         
         # Creating seperate windows for recursive forecasting
         lstm_scattering_windows = []
-        for seq_idx in range(4):
-            window_start = train_end_idx - (4 - seq_idx) * window_size + 1
+        for seq_idx in range(scattering_sequence_length):
+            window_start = train_end_idx - (scattering_sequence_length - seq_idx) * window_size + 1
             window_end = window_start + window_size
             lstm_scattering_windows.append(full_data_scaled[window_start:window_end].flatten())
         lstm_scattering_lag = full_data_scaled[train_end_idx - time_lags + 1:train_end_idx+1].flatten()
@@ -833,9 +833,6 @@ def rolling_window_forecast_scattering_lstm_cv(train_data, test_data, window_siz
                 
                 pure_lstm_lag = np.roll(pure_lstm_lag, -1)
                 pure_lstm_lag[-1] = pure_lstm_pred_scaled[0]
-            
-            if (step + 1) % 5 == 0:
-                print(f"  Completed step {step+1}/{forecast_steps} for starting point {start_idx}")
         
         all_lstm_scattering_sequences.append(lstm_scattering_preds)
         all_pure_lstm_sequences.append(pure_lstm_preds)

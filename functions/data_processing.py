@@ -159,7 +159,7 @@ def precompute_scattering_coefficients(data, window_size, scattering_transform, 
             
             scattering_coeffs_dict[start_idx] = scattering_coeffs.cpu()
         
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 10000 == 0:
             print(f"  Computed {i + 1}/{len(indices)} windows")
     
     print(f"pre-computation complete. Stored {len(scattering_coeffs_dict)} coefficient sets.")
@@ -361,7 +361,7 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
             scattering_outputs.append(scatter_output.cpu().numpy())
         if i < 5:
             color = plt.cm.viridis(i / 4)
-            plt.plot(sample_norm, alpha=0.7, label=f'Sample {i+1}', color=color)
+            plt.plot(sample, alpha=0.7, label=f'Sample {i+1}', color=color)
     
     plt.title('Sample Windows for scattering Analysis')
     plt.xlabel('time points', fontsize=12)
