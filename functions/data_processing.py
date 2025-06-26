@@ -1,10 +1,14 @@
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
+import nolds
 import numpy as np
+import scipy.stats as stats
 
-from statsmodels.tsa.stattools import acf
+from statsmodels.tsa.stattools import acf, adfuller
 from torch.utils.data import Dataset
+from scipy.fft import fft
+
 
 class TimeSeriesDataset(Dataset):
     """
@@ -518,7 +522,25 @@ def visualize_scattering_information(scattering, train_data, test_data, scatteri
     plt.tight_layout(pad=2.0)
     plt.savefig('scattering_information_analysis.png', dpi=300, bbox_inches='tight')
     plt.show()
+
+    # Adding an ADF test to begin the examination of long-memory more formally
+
+    adf_result = adfuller(acf_data_seasonal, autolag='AIC')
+    adf_stat = adf_result[0]
+    adf_pvalue = adf_result[1]
+    has_unit_root = adf_pvalue > 0.05
     
+    print(f"\nADF Test: {adf_stat:.3f} (p={adf_pvalue:.3f})")
+    print(f"Unit Root: {'Yes' if has_unit_root else 'No'}")
+
+    # Conducting an Rescaled Range (R/S) analysis to assess long memory properties
+
+    hurst_h = nolds.hurst_rs(acf_data_seasonal)
+    has_long_memory_hurst = hurst_h > 0.5
+    
+    print(f"\nHurst Exponent: {hurst_h:.3f}")
+    print(f"Long Memory: {'Yes' if has_long_memory_hurst else 'No'}")
+
     # Information compression analysis
     # that is: how many coefficients are needed compared to original signal length
     

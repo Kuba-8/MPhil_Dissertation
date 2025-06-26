@@ -15,7 +15,7 @@ if __name__ == "__main__":
     GLOBAL_SEED = 42 # Claaaaaaasic
     mdl.set_random_seeds(GLOBAL_SEED)
     
-    df = pd.read_excel("data/Hourly_energy_c_COMED_2005-25.xlsx")
+    df = pd.read_excel("data/Hourly_energy_c_BC_2010-25.xlsx")
     df = df[['datetime_beginning_ept', 'mw']]
     df["Date"] = pd.to_datetime(df["datetime_beginning_ept"])
     df.set_index("Date", inplace=True)
@@ -40,7 +40,7 @@ if __name__ == "__main__":
     ENERGY_THRESHOLD = 0.99
     
     MULTI_STEP_FORECAST = True
-    FORECAST_STEPS = 772
+    FORECAST_STEPS = 730
     NUMBER_OF_TRIALS_RANDOM_SEARCH = 20
     CV_SPLITS= 3
     NUM_RANDOM_STARTS= 20
@@ -55,9 +55,9 @@ if __name__ == "__main__":
     }
     
     lstm_params_grid = {
-        'hidden_dims': [20, 40, 60, 80, 100, 120],
-        'dropout_rates': [0.1, 0.2, 0.3, 0.4],
-        'learning_rates': [0.0001, 0.001, 0.003, 0.005],
+        'hidden_dims': [80, 100, 120],
+        'dropout_rates': [0.1, 0.2, 0.3],
+        'learning_rates': [0.001, 0.003, 0.005],
         'num_layers': [1, 2, 3],
         'full_epochs': 100
     }
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     
     plt.figure(figsize=(15, 10))
 
-    horizons = [24, 48, 72, 168, 336, 504, FORECAST_STEPS]
+    horizons = [24, 48, 72, 168, 336, FORECAST_STEPS]
     avg_errors = {'LSTM+Wavelet': [], 'Pure LSTM': [], 'SARIMA': []}
 
     for h in horizons:
@@ -302,6 +302,48 @@ if __name__ == "__main__":
         horizon_name = f"{h}h" if h < FORECAST_STEPS else "Full"
         print(f"{horizon_name:>7}\t{avg_errors['LSTM+Wavelet'][i]:>11.1f}\t{avg_errors['Pure LSTM'][i]:>9.1f}\t{avg_errors['SARIMA'][i]:>6.1f}")
 
+    plt.tight_layout()
+    plt.savefig('sample_forecast_comparisons.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+    # Computing a similar statistic for MAPE for greater comparability with the literature
+
+    avg_mape = {'LSTM+Wavelet': [], 'Pure LSTM': [], 'SARIMA': []}
+
+    for h in horizons:
+        lstm_scattering_mape = []
+        pure_lstm_mape = []
+        sarima_mape = []
+        
+        for i in range(len(all_actual_sequences)):
+            if h <= len(all_actual_sequences[i]):
+                actual_h = all_actual_sequences[i][:h]
+                
+                lstm_pred_h = all_lstm_scattering_sequences[i][:h]
+                non_zero_mask = actual_h != 0
+                if np.any(non_zero_mask):
+                    lstm_mape = np.mean(np.abs((actual_h[non_zero_mask] - lstm_pred_h[non_zero_mask]) / actual_h[non_zero_mask])) * 100
+                    lstm_scattering_mape.append(lstm_mape)
+                
+                pure_lstm_pred_h = all_pure_lstm_sequences[i][:h]
+                if np.any(non_zero_mask):
+                    pure_lstm_mape_val = np.mean(np.abs((actual_h[non_zero_mask] - pure_lstm_pred_h[non_zero_mask]) / actual_h[non_zero_mask])) * 100
+                    pure_lstm_mape.append(pure_lstm_mape_val)
+                
+                sarima_pred_h = all_sarima_sequences[i][:h]
+                if np.any(non_zero_mask):
+                    sarima_mape_val = np.mean(np.abs((actual_h[non_zero_mask] - sarima_pred_h[non_zero_mask]) / actual_h[non_zero_mask])) * 100
+                    sarima_mape.append(sarima_mape_val)
+        
+        avg_mape['LSTM+Wavelet'].append(np.mean(lstm_scattering_mape) if lstm_scattering_mape else 0)
+        avg_mape['Pure LSTM'].append(np.mean(pure_lstm_mape) if pure_lstm_mape else 0)
+        avg_mape['SARIMA'].append(np.mean(sarima_mape) if sarima_mape else 0)
+
+    print(f"\n~~~~~~~~~~~ Summary: Average MAPE by Horizon ~~~~~~~~~~~~~~~~~")
+    print("Horizon\tLSTM+Wavelet\tPure LSTM\tSARIMA")
+    for i, h in enumerate(horizons):
+        horizon_name = f"{h}h" if h < FORECAST_STEPS else "Full"
+        print(f"{horizon_name:>7}\t{avg_mape['LSTM+Wavelet'][i]:>11.1f}%\t{avg_mape['Pure LSTM'][i]:>8.1f}%\t{avg_mape['SARIMA'][i]:>5.1f}%")
     plt.tight_layout()
     plt.savefig('sample_forecast_comparisons.png', dpi=300, bbox_inches='tight')
     plt.show()
